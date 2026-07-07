@@ -1,0 +1,77 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daemon.local/grammar/tool-catalog.schema.json",
+  "title": "ToolCatalog",
+  "description": "v1 — the closed set of tools the airlock executes on the agent's behalf. Single source of truth used three ways: (a) Anthropic tool input_schema the oracle gives the model, (b) validation the airlock applies to every ToolCall, (c) the contract. The airlock executes NOTHING outside this set.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "tools"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "tools": {
+      "type": "array",
+      "description": "The closed tool set, for discovery.",
+      "items": { "$ref": "#/$defs/toolName" },
+      "uniqueItems": true
+    }
+  },
+  "$defs": {
+    "toolName": {
+      "type": "string",
+      "enum": ["fetch_series", "read_prior_vintage", "store_dataset", "finish"]
+    },
+    "fetch_series_args": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seriesId"],
+      "description": "Fetch a series from its source API. seriesId is a closed enum → there is no argument that expresses an arbitrary host.",
+      "properties": {
+        "seriesId": { "$ref": "https://daemon.local/grammar/indicator-dataset.schema.json#/$defs/seriesId" },
+        "start": { "type": "string", "format": "date" },
+        "end": { "type": "string", "format": "date" },
+        "vintage": {
+          "type": "string",
+          "enum": ["latest", "first_release"],
+          "description": "Which vintage to request where the source supports it. Defaults to latest."
+        }
+      }
+    },
+    "read_prior_vintage_args": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seriesId", "referenceMonth"],
+      "description": "Read the last dataset the daemon stored for this series/month, for revision detection.",
+      "properties": {
+        "seriesId": { "$ref": "https://daemon.local/grammar/indicator-dataset.schema.json#/$defs/seriesId" },
+        "referenceMonth": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" }
+      }
+    },
+    "store_dataset_args": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["target", "referenceMonth", "releaseDate", "indicators"],
+      "description": "Draft dataset the agent assembles. The airlock adds source (from CLI), datasetId, asOf and provenance (it did the fetch) — the agent cannot forge those — then validates the full IndicatorDataset.",
+      "properties": {
+        "target": { "$ref": "https://daemon.local/grammar/indicator-dataset.schema.json#/$defs/targetId" },
+        "referenceMonth": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+        "releaseDate": { "type": "string", "format": "date" },
+        "indicators": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "$ref": "https://daemon.local/grammar/indicator-dataset.schema.json#/$defs/indicator" }
+        }
+      }
+    },
+    "finish_args": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "description": "End the tool loop. abstain = data not ready this wake; nothing is stored or broadcast.",
+      "properties": {
+        "status": { "type": "string", "enum": ["stored", "abstain"] },
+        "note": { "type": "string", "maxLength": 400 }
+      }
+    }
+  }
+}

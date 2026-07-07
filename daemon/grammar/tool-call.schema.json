@@ -1,0 +1,37 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daemon.local/grammar/tool-call.schema.json",
+  "title": "ToolCall",
+  "description": "v1 — oracle → airlock. One tool invocation from the agent. The airlock validates `tool` is in the catalog and `args` against the catalog's per-tool arg schema before executing.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "callId", "tool", "args"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "callId": {
+      "type": "string",
+      "pattern": "^call-[A-Za-z0-9_-]{1,64}$",
+      "description": "Correlates with the ToolResult. Mirrors the model's tool_use id."
+    },
+    "tool": { "$ref": "https://daemon.local/grammar/tool-catalog.schema.json#/$defs/toolName" },
+    "args": { "type": "object" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "tool": { "const": "fetch_series" } } },
+      "then": { "properties": { "args": { "$ref": "https://daemon.local/grammar/tool-catalog.schema.json#/$defs/fetch_series_args" } } }
+    },
+    {
+      "if": { "properties": { "tool": { "const": "read_prior_vintage" } } },
+      "then": { "properties": { "args": { "$ref": "https://daemon.local/grammar/tool-catalog.schema.json#/$defs/read_prior_vintage_args" } } }
+    },
+    {
+      "if": { "properties": { "tool": { "const": "store_dataset" } } },
+      "then": { "properties": { "args": { "$ref": "https://daemon.local/grammar/tool-catalog.schema.json#/$defs/store_dataset_args" } } }
+    },
+    {
+      "if": { "properties": { "tool": { "const": "finish" } } },
+      "then": { "properties": { "args": { "$ref": "https://daemon.local/grammar/tool-catalog.schema.json#/$defs/finish_args" } } }
+    }
+  ]
+}

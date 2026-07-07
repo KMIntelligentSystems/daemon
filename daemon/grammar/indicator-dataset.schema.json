@@ -1,0 +1,148 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daemon.local/grammar/indicator-dataset.schema.json",
+  "title": "IndicatorDataset",
+  "description": "v1 — the leading-indicator dataset the oracle shapes and the airlock writes to the sandbox. This is also the payload the main-server orchestrator pulls after accepting a broadcast. Data only (values + provenance); no forecast or judgment — the orchestrator does the forecasting.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "datasetId", "referenceMonth", "target", "source", "releaseDate", "asOf", "indicators", "provenance"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "datasetId": {
+      "type": "string",
+      "pattern": "^ds-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "ds-<uuid v4>. Stable id for this stored dataset; referenced by the availability broadcast and used by the orchestrator to pull."
+    },
+    "referenceMonth": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$",
+      "description": "YYYY-MM the indicators inform (the forecast month being boosted)."
+    },
+    "target": {
+      "$ref": "#/$defs/targetId",
+      "description": "Which forecast target these indicators feed."
+    },
+    "source": {
+      "$ref": "#/$defs/source",
+      "description": "The provider this wake fetched from. One source per scheduled wake (per-source release calendar)."
+    },
+    "releaseDate": {
+      "type": "string",
+      "format": "date",
+      "description": "The source's official release date for this reference month."
+    },
+    "asOf": {
+      "type": "string",
+      "format": "date-time",
+      "description": "When the airlock assembled this dataset (RFC 3339)."
+    },
+    "indicators": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/indicator" }
+    },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "$defs": {
+    "targetId": {
+      "type": "string",
+      "description": "Forecast targets (Census M3 EITS). Extend deliberately.",
+      "enum": ["m3_new_orders", "m3_unfilled_orders"]
+    },
+    "source": {
+      "type": "string",
+      "description": "Free / keyed providers only in v1. Paywalled sentiment (ISM, S&P Global) intentionally excluded.",
+      "enum": ["census", "fred", "bls"]
+    },
+    "seriesId": {
+      "type": "string",
+      "description": "Closed enum of series. Targets double as indicators (new orders lead shipments). Paywalled series (ism_pmi, sp_global_pmi) excluded in v1.",
+      "enum": [
+        "m3_new_orders",
+        "m3_unfilled_orders",
+        "fred_tcu",
+        "fred_mcumfn",
+        "fred_ipman",
+        "fred_ipman_durables",
+        "fred_ipman_nondurables",
+        "fred_ipman_motor_vehicles",
+        "bls_ces_mfg_hours",
+        "bls_ces_mfg_overtime",
+        "bls_ces_temp_help",
+        "bls_ppi_mfg",
+        "philly_fed",
+        "empire_state",
+        "dallas_fed",
+        "richmond_fed",
+        "kansas_city_fed",
+        "cfnai",
+        "building_permits",
+        "new_home_sales"
+      ]
+    },
+    "indicator": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seriesId", "leadTimeMonths", "observations"],
+      "properties": {
+        "seriesId": { "$ref": "#/$defs/seriesId" },
+        "leadTimeMonths": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 12,
+          "description": "Approximate lead over the target, in months (0 = coincident)."
+        },
+        "unit": {
+          "type": "string",
+          "description": "Reported unit, verbatim from the source (e.g. 'Millions of Dollars', 'Index', 'Percent')."
+        },
+        "seasonalAdjustment": {
+          "type": "string",
+          "enum": ["seasonally_adjusted", "not_seasonally_adjusted", "unknown"]
+        },
+        "observations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 512,
+          "items": { "$ref": "#/$defs/observation" }
+        }
+      }
+    },
+    "observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["date", "value"],
+      "properties": {
+        "date": { "type": "string", "format": "date" },
+        "value": {
+          "type": "number",
+          "minimum": -1000000000,
+          "maximum": 1000000000,
+          "description": "The airlock applies tighter per-series range checks before storing."
+        },
+        "isPreliminary": {
+          "type": "boolean",
+          "description": "True for advance/flash vintages subject to later revision."
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fetchedAt", "sourceHost", "sourceHash"],
+      "properties": {
+        "fetchedAt": { "type": "string", "format": "date-time" },
+        "sourceHost": {
+          "type": "string",
+          "description": "Host actually contacted, e.g. 'api.stlouisfed.org' — must be on the airlock host allowlist."
+        },
+        "sourceHash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "SHA-256 hex of the raw source response, for dedupe and audit."
+        }
+      }
+    }
+  }
+}

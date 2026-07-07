@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daemon.local/grammar/task-context.schema.json",
+  "title": "TaskContext",
+  "description": "v1 — airlock → oracle at spawn. Tells the agent what wake it is running, and its budget. The tool catalog is delivered separately as the model's tool definitions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sessionId", "source", "referenceMonth", "goal", "budget"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "sessionId": {
+      "type": "string",
+      "pattern": "^sess-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    },
+    "source": {
+      "type": "string",
+      "enum": ["census", "fred", "bls"],
+      "description": "The single source this wake handles."
+    },
+    "referenceMonth": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+    "goal": {
+      "type": "string",
+      "maxLength": 1000,
+      "description": "Human-readable objective, e.g. 'Assemble this source's leading indicators for the M3 new-orders nowcast; abstain if incomplete.'"
+    },
+    "budget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["maxToolCalls", "wallClockSecs"],
+      "properties": {
+        "maxToolCalls": { "type": "integer", "minimum": 1, "maximum": 200 },
+        "wallClockSecs": { "type": "integer", "minimum": 1, "maximum": 300 }
+      }
+    }
+  }
+}

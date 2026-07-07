@@ -1,0 +1,30 @@
+[package]
+name = "daemon-airlock"
+version = "0.1.0"
+edition = "2021"
+description = "Capability broker for the agentic nowcasting daemon. Trusted: holds keys, DB, HMAC, network. Executes a closed tool set on the oracle's behalf."
+
+[[bin]]
+name = "daemon-airlock"
+path = "src/main.rs"
+
+[dependencies]
+# Minimal, auditable stack (plan v5): blocking HTTP, 100%-Rust crypto.
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+ureq = { version = "2", features = ["json", "tls"] }   # blocking HTTP client, rustls, no async runtime
+tiny_http = "0.12"                                      # blocking HTTP server for POST /run; no async runtime
+rusqlite = { version = "0.31", features = ["bundled"] } # sandbox store; bundled sqlite, no system dep
+hmac = "0.12"                                            # RustCrypto
+sha2 = "0.10"                                            # RustCrypto
+hex = "0.4"
+toml = "0.8"
+clap = { version = "4", features = ["derive"] }
+dotenvy = "0.15"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+uuid = { version = "1", features = ["v4"] }
+anyhow = "1"
+
+[profile.release]
+strip = true
+lto = true

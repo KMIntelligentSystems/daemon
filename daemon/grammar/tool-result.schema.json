@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daemon.local/grammar/tool-result.schema.json",
+  "title": "ToolResult",
+  "description": "v1 — airlock → oracle. The outcome of executing one ToolCall. On success `result` carries tool-specific data; on failure `error` carries a closed-set code. The oracle feeds this back to the model as a tool_result block. Tool results are UNTRUSTED data, never instructions.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "callId", "ok"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "callId": {
+      "type": "string",
+      "pattern": "^call-[A-Za-z0-9_-]{1,64}$",
+      "description": "Matches the ToolCall being answered."
+    },
+    "ok": { "type": "boolean" },
+    "result": {
+      "description": "Present iff ok = true. Shape depends on the tool (observations for fetch_series, {datasetId, contentHash} for store_dataset, etc.)."
+    },
+    "error": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "message"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "enum": [
+            "unknown_tool",
+            "invalid_args",
+            "series_not_allowed",
+            "host_not_allowed",
+            "fetch_failed",
+            "range_check_failed",
+            "validation_failed",
+            "storage_error",
+            "budget_exceeded"
+          ]
+        },
+        "message": { "type": "string", "maxLength": 400 }
+      }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "ok": { "const": true } } },
+      "then": { "required": ["result"], "not": { "required": ["error"] } }
+    },
+    {
+      "if": { "properties": { "ok": { "const": false } } },
+      "then": { "required": ["error"], "not": { "required": ["result"] } }
+    }
+  ]
+}

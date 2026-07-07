@@ -1,0 +1,52 @@
+# compiled output
+dist/
+
+# dependencies
+node_modules/
+
+# environment
+.env
+.env.*
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+
+# Salesforce DX
+.sfdx/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.user
+*.csv
+data/*.csv
+data/.env
+data/artifacts/*
+*.xlsx
+*.pdf
+*.html
+!src/react-app/index.html
+*.png
+
+# agent session intermediates
+tmp*/
+
+# db
+*.db
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+
+# python
+__pycache__/
+*.pyc
+
+# ephemeral scripts
+/scripts/

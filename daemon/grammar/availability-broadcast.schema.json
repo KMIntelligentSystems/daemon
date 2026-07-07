@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daemon.local/grammar/availability-broadcast.schema.json",
+  "title": "AvailabilityBroadcast",
+  "description": "v1 — the pre-determined grammar the daemon broadcasts to the main server after storing a dataset. Lightweight announcement + integrity envelope; carries no observation values. The server accepts or rejects (see broadcast-response.schema.json); on accept the orchestrator pulls the full IndicatorDataset by datasetId.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "broadcastId", "datasetId", "referenceMonth", "target", "source", "seriesIncluded", "releaseDate", "contentHash", "signature", "emittedAt"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "broadcastId": {
+      "type": "string",
+      "pattern": "^bc-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "bc-<uuid v4>. Echoed in the BroadcastResponse for correlation."
+    },
+    "datasetId": {
+      "type": "string",
+      "pattern": "^ds-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "The stored IndicatorDataset this broadcast announces. The orchestrator pulls by this id."
+    },
+    "referenceMonth": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"
+    },
+    "target": {
+      "type": "string",
+      "enum": ["m3_new_orders", "m3_unfilled_orders"]
+    },
+    "source": {
+      "type": "string",
+      "enum": ["census", "fred", "bls"]
+    },
+    "seriesIncluded": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "description": "seriesIds present in the stored dataset, so the server can decide relevance before pulling.",
+      "items": {
+        "type": "string",
+        "enum": [
+          "m3_new_orders",
+          "m3_unfilled_orders",
+          "fred_tcu",
+          "fred_mcumfn",
+          "fred_ipman",
+          "fred_ipman_durables",
+          "fred_ipman_nondurables",
+          "fred_ipman_motor_vehicles",
+          "bls_ces_mfg_hours",
+          "bls_ces_mfg_overtime",
+          "bls_ces_temp_help",
+          "bls_ppi_mfg",
+          "philly_fed",
+          "empire_state",
+          "dallas_fed",
+          "richmond_fed",
+          "kansas_city_fed",
+          "cfnai",
+          "building_permits",
+          "new_home_sales"
+        ]
+      }
+    },
+    "releaseDate": {
+      "type": "string",
+      "format": "date"
+    },
+    "contentHash": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$",
+      "description": "SHA-256 hex of the canonical stored IndicatorDataset JSON. The server re-checks this after pulling to confirm it got what was announced."
+    },
+    "signature": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["alg", "value"],
+      "properties": {
+        "alg": { "const": "HMAC-SHA256" },
+        "value": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "HMAC-SHA256 over the canonical broadcast body (all fields except signature), keyed by the shared secret. Authenticates the daemon to the main server."
+        }
+      }
+    },
+    "emittedAt": {
+      "type": "string",
+      "format": "date-time"
+    }
+  }
+}

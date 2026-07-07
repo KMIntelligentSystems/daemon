@@ -1,0 +1,50 @@
+# Airlock config — the airlock's view of the world. The agent can only ask for
+# series listed here; hosts not on the allowlist are refused by the fetch tool.
+# A RunRequest can select WITHIN this config (source/series/model/budget) but
+# can never expand it: unknown source/series/model → reject; budget → clamped.
+
+# Budget is the CEILING. A RunRequest's requested budget is clamped down to
+# these values (it may ask for less, never more).
+[budget]
+max_tool_calls = 20
+wall_clock_secs = 60
+
+# OpenRouter model allowlist (v6). A RunRequest's `model`, if present, must be
+# one of these; otherwise `default` is used. The cost ceiling stays in Rust.
+[models]
+allowlist = ["openai/gpt-4o-mini", "anthropic/claude-3.5-haiku", "google/gemini-2.0-flash-001"]
+default = "openai/gpt-4o-mini"
+
+[hosts]
+# Any fetch to a host outside this list is refused (host_not_allowed).
+allowlist = ["api.stlouisfed.org", "api.census.gov", "api.bls.gov"]
+
+# Scheduler (--schedule interval loop). Outside the trust boundary: it only
+# builds + signs RunRequests and POSTs them to /run, exactly like Railway cron
+# or a Windows Task Scheduler task would. Each entry fires once per (source,
+# month); dedupe/retry live downstream.
+[schedule]
+poll_secs = 3600   # how often the interval loop checks; override on the CLI for a fast dev proof
+
+[[schedule.entries]]
+source = "fred"
+targets = ["m3_new_orders"]
+# series omitted → the source's default_series is used
+
+[sources.fred]
+host = "api.stlouisfed.org"
+base_url = "https://api.stlouisfed.org/fred/series/observations"
+api_key_env = "FRED_API_KEY"
+default_series = ["fred_mcumfn"]   # fetched when a RunRequest omits `series`
+
+# One series wired for Phase 1. seriesId (id) is the grammar enum value;
+# provider_series_id is what the source API expects.
+[[series]]
+id = "fred_mcumfn"
+source = "fred"
+provider_series_id = "MCUMFN"
+unit = "Percent"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 0.0
+min_value = 0.0
+max_value = 200.0

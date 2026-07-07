@@ -1,0 +1,50 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://daemon.local/grammar/broadcast-response.schema.json",
+  "title": "BroadcastResponse",
+  "description": "v1 — the main server's reply to an AvailabilityBroadcast. accept | reject(reason). On accept the orchestrator will pull the dataset; on reject the daemon retains the stored dataset and retries on the next scheduled wake.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "broadcastId", "decision"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "broadcastId": {
+      "type": "string",
+      "pattern": "^bc-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+      "description": "Must match the broadcast being answered."
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["accept", "reject"]
+    },
+    "reason": {
+      "type": ["string", "null"],
+      "description": "Required (non-null) when decision = reject; must be null/absent on accept.",
+      "enum": [
+        "duplicate",
+        "bad_signature",
+        "out_of_window",
+        "schema_mismatch",
+        "unknown_series",
+        "content_hash_mismatch",
+        "storage_error",
+        null
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "decision": { "const": "reject" } } },
+      "then": {
+        "required": ["reason"],
+        "properties": { "reason": { "type": "string" } }
+      }
+    },
+    {
+      "if": { "properties": { "decision": { "const": "accept" } } },
+      "then": {
+        "properties": { "reason": { "type": "null" } }
+      }
+    }
+  ]
+}
