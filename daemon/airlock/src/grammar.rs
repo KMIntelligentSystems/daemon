@@ -145,6 +145,28 @@ pub struct RunRequest {
     pub signature: Signature,
 }
 
+// ---- TaskContext (internal contract, airlock → oracle at spawn) ------------
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BudgetCtx {
+    pub max_tool_calls: u32,
+    pub wall_clock_secs: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskContext {
+    pub schema_version: u32,
+    pub session_id: String,
+    pub source: String,
+    pub reference_month: String,
+    pub goal: String,
+    pub model: String,
+    pub series: Vec<String>,
+    pub budget: BudgetCtx,
+}
+
 // ---- Tool bus (internal contract) ----------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

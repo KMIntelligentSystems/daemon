@@ -5,7 +5,7 @@
   "description": "v1 — airlock → oracle at spawn. Tells the agent what wake it is running, and its budget. The tool catalog is delivered separately as the model's tool definitions.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "sessionId", "source", "referenceMonth", "goal", "budget"],
+  "required": ["schemaVersion", "sessionId", "source", "referenceMonth", "goal", "model", "series", "budget"],
   "properties": {
     "schemaVersion": { "const": 1 },
     "sessionId": {
@@ -22,6 +22,19 @@
       "type": "string",
       "maxLength": 1000,
       "description": "Human-readable objective, e.g. 'Assemble this source's leading indicators for the M3 new-orders nowcast; abstain if incomplete.'"
+    },
+    "model": {
+      "type": "string",
+      "maxLength": 128,
+      "description": "OpenRouter model id for this job, e.g. 'openai/gpt-4o-mini'. Gated by the airlock's [models] allowlist."
+    },
+    "series": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "description": "Series IDs the oracle is allowed to fetch for this source.",
+      "items": { "$ref": "https://daemon.local/grammar/indicator-dataset.schema.json#/$defs/seriesId" }
     },
     "budget": {
       "type": "object",

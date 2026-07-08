@@ -1,0 +1,21 @@
+{
+  "name": "daemon-oracle",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Untrusted agent for the agentic nowcasting daemon. Runs the LLM tool-loop against OpenRouter; holds only OPENROUTER_API_KEY. No fs / db / shell / data-source keys.",
+  "scripts": {
+    "build": "tsc --project tsconfig.json && npx tsx scripts/scan-bundle.ts",
+    "scripted": "node dist/main.js scripted",
+    "dev": "tsx src/main.ts scripted",
+    "scan": "npx tsx scripts/scan-bundle.ts"
+  },
+  "dependencies": {
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

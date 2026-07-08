@@ -6,8 +6,12 @@ This supersedes v5. The core v5 design is unchanged — **the LLM drives an adap
 
 - **No vendor SDK in the oracle.** The oracle talks to **OpenRouter** (OpenAI-compatible `POST /chat/completions`, base `https://openrouter.ai/api/v1`) via a thin `fetch` + `zod`, provider/model swappable via config. This replaces the Anthropic Messages API binding in v5's Phase 3.
 - **The airlock is a long-lived HTTP service; the oracle stays one-shot.** The airlock boots once and serves; each job spawns a fresh oracle process that is killed after `finish`. This reconciles the one-shot agent design with two new persistent channels (inbound `RunRequest`, outbound pull endpoint).
-- **New inbound grammar `RunRequest`** (main server → airlock, HMAC-signed): selects `source` / `referenceMonth` / `targets` / `series` / `model` / `budget`, **all validated against config** — a request can select *within* the airlock's capabilities but never expand them. The chosen model is gated against a **config allowlist**; the cost ceiling stays in Rust.
-- **`RunRequest` replaces cron as the wake mechanism.** Anything that can POST a signed `RunRequest` can wake the daemon: Railway cron in prod, a **Windows Task Scheduler task or the airlock's own built-in interval loop** in dev/local-run. The scheduler is now pluggable and outside the trust boundary.
+- **New inbound grammar `RunRequest`** (control channel → airlock, HMAC-signed): selects `source` / `referenceMonth` / `targets` / `series?` / `model?` / `budget?`, **all validated against config** — a request can select *within* the airlock's capabilities but never expand them. The model is gated against a **config allowlist**; the cost ceiling stays in Rust.
+- **`RunRequest` is the single wake mechanism, and it has two senders.** The channel is sender-agnostic (any HMAC signer); the airlock validates every request against config regardless of origin. Two roles use it:
+  1. **Scheduled baseline** — an independent scheduler (Railway cron / Windows Task Scheduler / the airlock's `--schedule` loop) fires a per-source, per-month request using the source's **default** series set; `model`/`budget` omitted → config defaults. This is the daemon's autonomous monthly cadence.
+  2. **Main-server ad-hoc** — the orchestrator requests **specific** data on demand (explicit `series`, and optionally `model`/`budget`) when it wants a targeted refresh.
+
+  Same endpoint, same gating; only the sender and intent differ. Crucially, this is a *trigger* channel — **the data flow is unchanged and always daemon-initiated**: `airlock → AvailabilityBroadcast → main server → pull`. The main server never receives data via `RunRequest`; it only (optionally) *asks the daemon to go get some*.
 - **Windows is a first-class dev + local-run target.** The daemon must run on Windows in the same fashion as on Railway (functional parity). Production *hardening* (Phase 4) still targets Railway/Linux; Windows runs the **portable core** of the sandbox and relies on the closed tool catalog as its capability boundary. See **Runtime portability** below.
 - Carried over from v5: the oracle is a real tool-using agent; the airlock is a broker, not a pipeline; new tool-bus grammars (`ToolCall` / `ToolResult` / `tool-catalog` / `task-context`); the three external grammars (`indicator-dataset`, `availability-broadcast`, `broadcast-response`) are unchanged.
 
@@ -24,11 +28,13 @@ Bidirectional capability separation: the oracle never sees data-source keys; the
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
-│ SCHEDULER (pluggable, outside the trust boundary)             │
-│   one wake per source release window; POSTs a signed          │
-│   RunRequest {source, month, targets, series, model, budget}  │
-│   • prod:  Railway cron                                       │
-│   • dev/Windows: Task Scheduler task, or airlock interval loop │
+│ RunRequest SENDER (pluggable, outside the trust boundary)     │
+│   POSTs a signed RunRequest — two roles, one endpoint:        │
+│   (1) SCHEDULED BASELINE: cron / Task Scheduler / --schedule  │
+│       → per-source/month wake, source's DEFAULT series        │
+│   (2) MAIN-SERVER AD-HOC: orchestrator asks for SPECIFIC      │
+│       series (± model/budget) on demand                       │
+│   {source, month, targets, series?, model?, budget?}          │
 └─────────────────────────┬────────────────────────────────────┘
                           │ POST /run   (HMAC-signed RunRequest)
                           ▼
@@ -68,12 +74,12 @@ Bidirectional capability separation: the oracle never sees data-source keys; the
 │  keys · no net but OpenRouter │   │  PULLS IndicatorDataset   │
 │                               │   │  by datasetId (HMAC auth) │
 │  loop:                        │   │  → does the forecasting   │
-│   POST openrouter/chat        │   │                           │
-│   (tools = catalog)           │   │  (also SIGNS + SENDS the  │
-│   on tool_call → ToolCall     │   │   RunRequest that wakes   │
-│   ← ToolResult → feed back    │   │   the daemon, in prod)    │
-│   until model calls `finish`  │   └──────────────────────────┘
-└───────────────────────────────┘
+│   POST openrouter/chat        │   │  (MAY also sign+send an   │
+│   (tools = catalog)           │   │   AD-HOC RunRequest for   │
+│   on tool_call → ToolCall     │   │   specific data; baseline │
+│   ← ToolResult → feed back    │   │   wakes come from a       │
+│   until model calls `finish`  │   │   scheduler, not here)    │
+└───────────────────────────────┘   └──────────────────────────┘
 ```
 
 The oracle uses **OpenRouter's OpenAI-compatible tool calling**: the tool catalog is handed to the model as `tools` definitions; each `tool_call` becomes a `ToolCall` over stdio; the airlock's `ToolResult` becomes a `tool` role message fed back to the model. Provider and model are chosen per-`RunRequest` from the config allowlist.
@@ -108,8 +114,8 @@ Notes:
 - `availability-broadcast.schema.json` — daemon → server announcement (hash + HMAC).
 - `broadcast-response.schema.json` — server → daemon `accept | reject(reason)`.
 
-**Inbound control (main server → airlock) — added in v6:**
-- `run-request.schema.json` — HMAC-signed job trigger: `{ source, referenceMonth, targets, series?, model?, budget? }`. Every field is validated against config; `model` must be in the config allowlist; `budget` is clamped to the config ceiling. Selects within capability, never expands it.
+**Inbound control (scheduler / main server → airlock) — added in v6:**
+- `run-request.schema.json` — HMAC-signed job **trigger** (not a data channel): `{ source, referenceMonth, targets, series?, model?, budget? }`. Sent either by an independent scheduler (baseline wake, series omitted → source default) or by the main-server orchestrator (ad-hoc, explicit series). Every field is validated against config; `model` must be in the config allowlist; `budget` is clamped to the config ceiling. Selects within capability, never expands it.
 
 **Internal (tool bus, airlock ↔ oracle) — added in Phase 1:**
 - `tool-catalog.schema.json` — the closed tool set + per-tool arg schemas (discriminated by tool name).
@@ -124,13 +130,16 @@ Notes:
 
 ### Scheduling model (v6)
 
-One wake per source release window; each wake handles **one source** for the current reference month. The main server accumulates per-source broadcasts across the month; the forecast is boosted incrementally as sources land. Failed/missed wakes store nothing and retry next window.
+Each wake handles **one source** for the current reference month. The main server accumulates per-source broadcasts across the month; the forecast is boosted incrementally as sources land. Failed/missed wakes store nothing and retry next window.
 
-The trigger is a **signed `RunRequest` POSTed to the airlock's `/run` endpoint**, not a hard-wired cron. The scheduler is pluggable and lives *outside* the trust boundary:
-- **Prod (Railway):** a Railway cron entry per source POSTs the `RunRequest`.
-- **Dev / local-run (Windows):** either a **Task Scheduler task** (`schtasks`) that POSTs the request, or the airlock's **built-in interval loop** (`--schedule` flag) that reads the same per-source calendar from config and self-triggers. No cloud dependency to run the whole daemon on a laptop.
+Every wake is a **signed `RunRequest` POSTed to the airlock's `/run` endpoint** — never a hard-wired cron. There are two senders, both untrusted plumbing (the airlock re-validates every request against config; a rogue sender still cannot fetch a non-allowlisted series, use a non-allowlisted model, or exceed the budget ceiling):
 
-Because validation of the `RunRequest` happens in the airlock against config, the scheduler is untrusted plumbing — a rogue scheduler still cannot make the daemon fetch a non-allowlisted series, use a non-allowlisted model, or exceed the budget ceiling.
+1. **Scheduled baseline** — the daemon's autonomous monthly cadence. A per-source request with `series` omitted, so the airlock fetches the source's configured **default set** (e.g. once-a-month "new orders" lookups). The sender is pluggable and outside the trust boundary:
+   - **Prod (Railway):** a Railway cron entry per source POSTs the `RunRequest`.
+   - **Dev / local-run (Windows):** a **Task Scheduler task** (`schtasks`) that POSTs it, or the airlock's **built-in interval loop** (`--schedule` flag) reading the same per-source calendar from config. No cloud dependency to run the whole daemon on a laptop.
+2. **Main-server ad-hoc** — the orchestrator POSTs a request with **explicit `series`** (and optionally `model`/`budget`) when it wants specific data on demand, outside the baseline schedule.
+
+Both paths converge on the same `/run` handler and the same gating. Regardless of sender, the daemon's output is always the same daemon-initiated push: it stores and broadcasts, and the main server consumes + pulls. `RunRequest` triggers work; it never carries data back.
 
 ### Runtime portability (v6) — Windows dev/local-run, Railway prod
 
@@ -194,7 +203,7 @@ The daemon must run **the same way** on a Windows dev box as on Railway. The cod
 
 **Phase 6 — Main-server integration (½ session)**
 - Accept/reject endpoint + orchestrator tool `pull_indicator_dataset(id)` → structured JSON.
-- Orchestrator **signs and sends the `RunRequest`** (picks source/month/model/budget within the allowlist).
+- Orchestrator can **sign and send an ad-hoc `RunRequest`** for specific data (explicit series, ± model/budget within the allowlist) — the on-demand path, distinct from the scheduled baseline wakes.
 - Wire pulled indicators into the M3 forecast boost.
 - UI: per-source arrival status for the current month.
 

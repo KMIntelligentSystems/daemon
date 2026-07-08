@@ -21,6 +21,7 @@ use crate::config::{Config, ScheduleEntry};
 use crate::crypto::{hmac_sha256_hex, hmac_sha256_verify};
 use crate::grammar::*;
 use crate::tools::{Session, Tools};
+use rusqlite::Connection;
 
 const KNOWN_TARGETS: &[&str] = &["m3_new_orders", "m3_unfilled_orders"];
 
@@ -281,6 +282,43 @@ fn reject_json(request_id: &str, code: u16, reason: impl Into<String>) -> (u16, 
     )
 }
 
+/// Simple JSON error without a requestId.
+fn json_err(code: u16, reason: impl Into<String>) -> (u16, String) {
+    (code, serde_json::json!({ "ok": false, "reason": reason.into() }).to_string())
+}
+
+/// HMAC-authed pull: verify the X-Daemon-Sig header = HMAC-SHA256(datasetId).
+fn check_pull_auth(hmac_key: &[u8], dataset_id: &str, request: &tiny_http::Request) -> bool {
+    let provided = request
+        .headers()
+        .iter()
+        .find(|h| h.field.equiv("x-daemon-sig"))
+        .map(|h| h.value.as_str())
+        .unwrap_or("");
+    hmac_sha256_verify(hmac_key, dataset_id.as_bytes(), provided)
+}
+
+/// Pull a stored dataset by id.  Returns the full IndicatorDataset JSON.
+fn handle_pull(db_path: &str, hmac_key: &[u8], dataset_id: &str, request: &tiny_http::Request) -> (u16, String) {
+    if !check_pull_auth(hmac_key, dataset_id, request) {
+        return json_err(401, "invalid or missing X-Daemon-Sig header");
+    }
+    let db = match Connection::open(db_path) {
+        Ok(d) => d,
+        Err(e) => return json_err(500, format!("db open: {e}")),
+    };
+    let body: std::result::Result<String, rusqlite::Error> = db.query_row(
+        "SELECT body FROM datasets WHERE dataset_id = ?1",
+        [dataset_id],
+        |r| r.get(0),
+    );
+    match body {
+        Ok(b) => (200, b),
+        Err(rusqlite::Error::QueryReturnedNoRows) => json_err(404, "dataset not found"),
+        Err(e) => json_err(500, format!("db read: {e}")),
+    }
+}
+
 /// Verify → validate → run. Returns (http_status, json_body).
 fn handle_run(config_path: &str, db_path: &str, hmac_key: &[u8], raw: &str) -> (u16, String) {
     let req: RunRequest = match serde_json::from_str(raw) {
@@ -347,6 +385,14 @@ pub fn serve_http(
                     (400u16, format!("{{\"ok\":false,\"reason\":\"read body: {e}\"}}"))
                 } else {
                     handle_run(&config_path, &db_path, &hmac_key, &raw)
+                }
+            }
+            (tiny_http::Method::Get, url) if url.starts_with("/datasets/") => {
+                let ds_id = url.strip_prefix("/datasets/").unwrap_or("");
+                if ds_id.is_empty() {
+                    json_err(400, "missing dataset id in path")
+                } else {
+                    handle_pull(&db_path, &hmac_key, ds_id, &request)
                 }
             }
             _ => (404u16, "{\"ok\":false,\"reason\":\"not found\"}".to_string()),
