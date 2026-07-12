@@ -46,5 +46,9 @@ provider_series_id = "MCUMFN"
 unit = "Percent"
 seasonal_adjustment = "seasonally_adjusted"
 lead_time_months = 0.0
+# G.17 publishes mid-month for the PRIOR month → lag 1. The scheduler requests
+# (current month − 1); a wake before the release abstains (no ref-month obs yet).
+# See data/lookups/leading_indicators.json for the full release calendar.
+reference_lag_months = 1
 min_value = 0.0
 max_value = 200.0

@@ -71,6 +71,13 @@ pub struct SeriesCfg {
     pub unit: String,
     pub seasonal_adjustment: String,
     pub lead_time_months: f64,
+    /// Publication lag: at the series' release, the newest available reference
+    /// month = releaseMonth - reference_lag_months. 0 = published in-month
+    /// (e.g. regional Fed surveys), 1 = prior month (G.17), 2 = two months back
+    /// (M3 full report). Drives the scheduler's reference-month choice. Mirrors
+    /// data/lookups/leading_indicators.json, the authoritative catalog.
+    #[serde(default)]
+    pub reference_lag_months: u32,
     pub min_value: f64,
     pub max_value: f64,
 }

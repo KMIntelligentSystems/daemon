@@ -87,6 +87,42 @@ curl -X POST -H "Content-Type: application/json" --data @req.json http://127.0.0
 
 Endpoints: `POST /run` (signed RunRequest → job outcome), `GET /health`.
 
+### Reference month & publication lag
+
+Leading indicators publish on a lag: on a mid-July run, the newest capacity-
+utilization month available is June (and the M3 full report for June only lands
+in early August). So the scheduler must not ask for the current calendar month.
+
+- `emit-run-request --month auto` derives the reference month from the resolved
+  series' `reference_lag_months` (config), e.g. `current − 1` for the G.17 lag.
+  Pass `--as-of YYYY-MM-DD` to compute against a fixed date (for testing).
+- If a wake fires before the data is out, the job **abstains** (HTTP 200, status
+  `abstain`, nothing stored/broadcast) and the next scheduled run retries. This is
+  the abstain guard: the requested reference month must appear in the fetched
+  observations or the job is a clean no-op — it never labels stale data as current.
+
+The full release calendar (each source's rule, lag, and confirmed 2026 dates)
+lives in [`data/lookups/leading_indicators.json`](data/lookups/leading_indicators.json);
+`config.toml` carries the operational `reference_lag_months` per series.
+
+### Dev scheduling on Windows (Task Scheduler)
+
+Run the service **without** `--schedule`, and let Windows Task Scheduler be the
+external scheduler (the same shape as Railway cron in prod — an HTTP POST):
+
+```powershell
+# service only (no built-in loop):
+cargo run -- serve-http --port 8791
+
+# register one task per source on its publication day (+1 buffer):
+powershell -File scripts/register-tasks.ps1          # -WhatIf to preview, -Unregister to remove
+```
+
+Each task runs [`scripts/run-source.ps1`](scripts/run-source.ps1), which emits a
+signed RunRequest (`--month auto`) and POSTs it to `/run`, logging the outcome to
+`airlock/logs/scheduler.log`. Only series wired in `config.toml` are enabled
+(currently `fred_mcumfn`); the rest print as ready-to-enable commands.
+
 **Scheduling is pluggable and outside the trust boundary** — the airlock verifies the HMAC and validates every field against config before trusting anything:
 - **Prod (Railway):** a cron entry per source POSTs a signed `RunRequest`.
 - **Dev/local (Windows):** the `--schedule` loop, or a **Task Scheduler** task that runs `emit-run-request` and POSTs the result. Either way it's just an HTTP POST.

@@ -1,0 +1,486 @@
+{
+  "schemaVersion": "1.1.0",
+  "generatedNote": "Catalog of M3 nowcast targets and their leading indicators, each paired with the PUBLICATION RULE that triggers a fetch. The scheduler wakes on/after an entry's release day; at that moment the newest available reference month = releaseMonth - referenceLagMonths. Where 'confirmed': true, the 2026 dates were verified against the publisher's official release calendar (see sourceUrls). asOf reasoning date: 2026-07-12.",
+  "conventions": {
+    "referenceLagMonths": "At an entry's release, the newest published reference month = (month of release date) - referenceLagMonths. 0 = publishes the current month; 1 = publishes the prior month; 2 = publishes two months back.",
+    "releaseDayRule": "Human-readable rule for WHEN in the release month the value drops; drives the Task Scheduler trigger day.",
+    "approxDayOfMonth": "Integer approximation of releaseDayRule for a simple day-of-month trigger (scripts/register-tasks.ps1 fires ~1 day later).",
+    "confirmed2026": "Verified 'YYYY-MM-DD -> YYYY-MM' pairs (releaseDate -> referenceMonth) from the official calendar. Absent/false 'confirmed' => rule-based estimate.",
+    "role": "target = the M3 series the main server forecasts; predictor = a leading indicator fed into that forecast.",
+    "wired": "true = already fetchable through the current airlock config (config.toml); false = catalog candidate, not yet wired."
+  },
+  "targets": [
+    {
+      "id": "m3_new_orders",
+      "name": "Manufacturers' New Orders (M3)",
+      "source": "census",
+      "publisher": "U.S. Census Bureau — M3 EITS",
+      "host": "api.census.gov",
+      "providerSeries": "M3 EITS: category MTM, data_type_code=NO",
+      "role": "target",
+      "leadTimeMonths": 0,
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Advance Report on Durable Goods (M3-1)",
+          "coverage": "durable goods only (new orders, shipments, unfilled orders)",
+          "referenceLagMonths": 1,
+          "releaseDayRule": "~25 working days after month end (about the 25th-27th of the following month)",
+          "approxDayOfMonth": 27,
+          "releaseTimeEt": "08:30",
+          "revisesLater": true,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-06-25 -> 2026-05", "2026-07-27 -> 2026-06", "2026-08-26 -> 2026-07",
+            "2026-09-25 -> 2026-08", "2026-10-27 -> 2026-09", "2026-11-25 -> 2026-10",
+            "2026-12-23 -> 2026-11"
+          ]
+        },
+        {
+          "name": "Full Report on Manufacturers' Shipments, Inventories and Orders (M3)",
+          "coverage": "complete new orders incl. nondurables; revises the advance",
+          "referenceLagMonths": 2,
+          "releaseDayRule": "~42 days after month end (about the 2nd-4th of the second month after; lands the week after that month's advance)",
+          "approxDayOfMonth": 4,
+          "releaseTimeEt": "10:00",
+          "revisesLater": false,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-02 -> 2026-05", "2026-08-04 -> 2026-06", "2026-09-02 -> 2026-07",
+            "2026-10-02 -> 2026-08", "2026-11-03 -> 2026-09", "2026-12-03 -> 2026-10"
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://www.census.gov/manufacturing/m3/release_schedule.html",
+        "https://www.census.gov/economic-indicators/calendar-listview.html"
+      ]
+    },
+    {
+      "id": "m3_unfilled_orders",
+      "name": "Manufacturers' Unfilled Orders (M3)",
+      "source": "census",
+      "publisher": "U.S. Census Bureau — M3 EITS",
+      "host": "api.census.gov",
+      "providerSeries": "M3 EITS: category MTM, data_type_code=UO",
+      "role": "target",
+      "leadTimeMonths": 0,
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Full Report on Manufacturers' Shipments, Inventories and Orders (M3)",
+          "coverage": "unfilled orders (backlog), durable goods",
+          "referenceLagMonths": 2,
+          "releaseDayRule": "~42 days after month end (about the 2nd-4th of the second month after)",
+          "approxDayOfMonth": 4,
+          "releaseTimeEt": "10:00",
+          "revisesLater": false,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-02 -> 2026-05", "2026-08-04 -> 2026-06", "2026-09-02 -> 2026-07",
+            "2026-10-02 -> 2026-08", "2026-11-03 -> 2026-09", "2026-12-03 -> 2026-10"
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://www.census.gov/manufacturing/m3/release_schedule.html"
+      ]
+    }
+  ],
+  "predictors": [
+    {
+      "id": "fred_mcumfn",
+      "name": "Capacity Utilization: Manufacturing",
+      "source": "fred",
+      "publisher": "Federal Reserve G.17 (Industrial Production & Capacity Utilization)",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "MCUMFN",
+      "role": "predictor",
+      "leadTimeMonths": 0,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "high — supply-side pressure",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": true,
+      "releases": [
+        {
+          "name": "G.17 monthly release",
+          "referenceLagMonths": 1,
+          "releaseDayRule": "mid-month for the prior month (about the 15th-18th)",
+          "approxDayOfMonth": 17,
+          "releaseTimeEt": "09:15",
+          "revisesLater": true,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-17 -> 2026-06", "2026-08-18 -> 2026-07", "2026-09-18 -> 2026-08",
+            "2026-10-16 -> 2026-09", "2026-11-17 -> 2026-10", "2026-12-16 -> 2026-11"
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://www.federalreserve.gov/releases/g17/"
+      ]
+    },
+    {
+      "id": "fred_tcu",
+      "name": "Capacity Utilization: Total Industry",
+      "source": "fred",
+      "publisher": "Federal Reserve G.17",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "TCU",
+      "role": "predictor",
+      "leadTimeMonths": 0,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "high — supply-side pressure",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "G.17 monthly release",
+          "referenceLagMonths": 1,
+          "releaseDayRule": "mid-month for the prior month (about the 15th-18th)",
+          "approxDayOfMonth": 17,
+          "releaseTimeEt": "09:15",
+          "revisesLater": true,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-17 -> 2026-06", "2026-08-18 -> 2026-07", "2026-09-18 -> 2026-08",
+            "2026-10-16 -> 2026-09", "2026-11-17 -> 2026-10", "2026-12-16 -> 2026-11"
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://www.federalreserve.gov/releases/g17/"
+      ]
+    },
+    {
+      "id": "fred_ipman",
+      "name": "Industrial Production: Manufacturing",
+      "source": "fred",
+      "publisher": "Federal Reserve G.17",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "IPMAN",
+      "role": "predictor",
+      "leadTimeMonths": 0,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "medium — sector composition",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "G.17 monthly release",
+          "referenceLagMonths": 1,
+          "releaseDayRule": "mid-month for the prior month (about the 15th-18th)",
+          "approxDayOfMonth": 17,
+          "releaseTimeEt": "09:15",
+          "revisesLater": true,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-17 -> 2026-06", "2026-08-18 -> 2026-07", "2026-09-18 -> 2026-08",
+            "2026-10-16 -> 2026-09", "2026-11-17 -> 2026-10", "2026-12-16 -> 2026-11"
+          ]
+        }
+      ],
+      "sourceUrls": [
+        "https://www.federalreserve.gov/releases/g17/"
+      ]
+    },
+    {
+      "id": "fred_empire_state_mfg",
+      "name": "Empire State (NY) Manufacturing — General Business Conditions",
+      "source": "fred",
+      "publisher": "Federal Reserve Bank of New York (mirrored on FRED)",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "GACDISA066MSFRBNY",
+      "role": "predictor",
+      "leadTimeMonths": 1,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "high — earliest ISM proxy; current-month sentiment",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Empire State Manufacturing Survey",
+          "referenceLagMonths": 0,
+          "releaseDayRule": "around the 15th of the CURRENT month (15th, or next business day if weekend)",
+          "approxDayOfMonth": 15,
+          "releaseTimeEt": "08:30",
+          "revisesLater": false,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-15 -> 2026-07", "2026-08-17 -> 2026-08", "2026-09-15 -> 2026-09",
+            "2026-10-15 -> 2026-10", "2026-11-16 -> 2026-11", "2026-12-15 -> 2026-12"
+          ],
+          "caveat": "Aug 15 (Sat) -> Aug 17; Nov 15 (Sun) -> Nov 16. Release-day rule confirmed via FRED series GACDISA066MSFRBNY (Jun 15, 2026 release for Jun 2026; next Jul 15, 2026)."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.newyorkfed.org/survey/empire/empiresurvey_overview.html",
+        "https://fred.stlouisfed.org/series/GACDISA066MSFRBNY"
+      ]
+    },
+    {
+      "id": "fred_philly_fed_mfg",
+      "name": "Philadelphia Fed Manufacturing Business Outlook — General Activity",
+      "source": "fred",
+      "publisher": "Federal Reserve Bank of Philadelphia (mirrored on FRED)",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "GACDFSA066MSFRBPHI",
+      "role": "predictor",
+      "leadTimeMonths": 1,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "high — ISM proxy; current-month sentiment",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Manufacturing Business Outlook Survey",
+          "referenceLagMonths": 0,
+          "releaseDayRule": "3rd Thursday of the CURRENT month",
+          "approxDayOfMonth": 18,
+          "releaseTimeEt": "08:30",
+          "revisesLater": false,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-16 -> 2026-07", "2026-08-20 -> 2026-08", "2026-09-17 -> 2026-09",
+            "2026-10-15 -> 2026-10", "2026-11-19 -> 2026-11", "2026-12-17 -> 2026-12"
+          ],
+          "caveat": "Confirmed: 3rd Thursday. Jun 18, 2026 release for Jun 2026; next Jul 16, 2026 (FRED series GACDFSA066MSFRBPHI)."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.philadelphiafed.org/research-and-data/regional-economy/business-outlook-survey/",
+        "https://fred.stlouisfed.org/series/GACDFSA066MSFRBPHI"
+      ]
+    },
+    {
+      "id": "fred_richmond_fed_mfg",
+      "name": "Richmond Fed Manufacturing — Composite Index",
+      "source": "fred",
+      "publisher": "Federal Reserve Bank of Richmond (mirrored on FRED)",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "MFGCI",
+      "role": "predictor",
+      "leadTimeMonths": 1,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "high — ISM proxy; current-month sentiment",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Fifth District Survey of Manufacturing Activity",
+          "referenceLagMonths": 0,
+          "releaseDayRule": "4th Tuesday of the CURRENT month",
+          "approxDayOfMonth": 23,
+          "releaseTimeEt": "10:00",
+          "revisesLater": false,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-28 -> 2026-07", "2026-08-25 -> 2026-08", "2026-09-22 -> 2026-09",
+            "2026-10-27 -> 2026-10", "2026-11-24 -> 2026-11", "2026-12-22 -> 2026-12"
+          ],
+          "caveat": "Rule: 4th Tuesday (well-established). FRED series MFGCI; verify series ID is still current."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.richmondfed.org/research/regional_economy/surveys_of_business_conditions/manufacturing",
+        "https://fred.stlouisfed.org/series/MFGCI"
+      ]
+    },
+    {
+      "id": "fred_dallas_fed_mfg",
+      "name": "Dallas Fed Manufacturing (Texas Manufacturing Outlook) — General Activity",
+      "source": "fred",
+      "publisher": "Federal Reserve Bank of Dallas (mirrored on FRED)",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "BACTSAMFRBDAL",
+      "role": "predictor",
+      "leadTimeMonths": 1,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "high — ISM proxy; current-month sentiment",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Texas Manufacturing Outlook Survey",
+          "referenceLagMonths": 0,
+          "releaseDayRule": "last Monday of the CURRENT month (shifts for Memorial Day)",
+          "approxDayOfMonth": 27,
+          "releaseTimeEt": "10:30",
+          "revisesLater": false,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-27 -> 2026-07", "2026-08-31 -> 2026-08", "2026-09-28 -> 2026-09",
+            "2026-10-26 -> 2026-10", "2026-11-30 -> 2026-11", "2026-12-28 -> 2026-12"
+          ],
+          "caveat": "Confirmed against official 2026 release calendar at dallasfed.org. All 12 months verified: Jan 26, Feb 23, Mar 30, Apr 27, May 26 (Tue, Memorial Day shift), Jun 29, Jul 27, Aug 31, Sep 28, Oct 26, Nov 30, Dec 28. FRED series BACTSAMFRBDAL (Jun 29, 2026 release for Jun 2026; next Jul 27, 2026)."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.dallasfed.org/research/surveys/tmos",
+        "https://fred.stlouisfed.org/series/BACTSAMFRBDAL"
+      ]
+    },
+    {
+      "id": "fred_kansas_city_fed_mfg",
+      "name": "Kansas City Fed Manufacturing — Composite Index",
+      "source": "fred",
+      "publisher": "Federal Reserve Bank of Kansas City (mirrored on FRED)",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "MOCMFG",
+      "role": "predictor",
+      "leadTimeMonths": 1,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "high — ISM proxy; current-month sentiment",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Tenth District Manufacturing Survey",
+          "referenceLagMonths": 0,
+          "releaseDayRule": "last Thursday of the CURRENT month",
+          "approxDayOfMonth": 26,
+          "releaseTimeEt": "11:00",
+          "revisesLater": false,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-30 -> 2026-07", "2026-08-27 -> 2026-08", "2026-09-24 -> 2026-09",
+            "2026-10-29 -> 2026-10", "2026-11-26 -> 2026-11", "2026-12-31 -> 2026-12"
+          ],
+          "caveat": "Confirmed against official 2026 release calendar at kansascityfed.org. Jun 25, 2026 release for Jun 2026 (last Thursday). Nov 26 is Thanksgiving — may shift to Wed Nov 25. Verify FRED series ID is current (MOCMFG not found via FRED API search)."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.kansascityfed.org/surveys/manufacturing-survey/",
+        "https://fred.stlouisfed.org/series/MOCMFG"
+      ]
+    },
+    {
+      "id": "fred_cfnai",
+      "name": "Chicago Fed National Activity Index",
+      "source": "fred",
+      "publisher": "Federal Reserve Bank of Chicago (mirrored on FRED)",
+      "host": "api.stlouisfed.org",
+      "providerSeries": "CFNAI",
+      "role": "predictor",
+      "leadTimeMonths": 0,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "medium — broad activity composite",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "CFNAI monthly release",
+          "referenceLagMonths": 1,
+          "releaseDayRule": "toward the end of the following month (about the 21st-26th)",
+          "approxDayOfMonth": 24,
+          "releaseTimeEt": "08:30",
+          "revisesLater": true,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-23 -> 2026-06", "2026-08-24 -> 2026-07", "2026-09-21 -> 2026-08",
+            "2026-10-26 -> 2026-09", "2026-11-23 -> 2026-10", "2026-12-21 -> 2026-11"
+          ],
+          "caveat": "Jan/Feb 2026 releases were dual-month catch-up from the 2025 shutdown backlog; normal lag-1 resumed March 2026."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.chicagofed.org/research/data/data-release-calendar"
+      ]
+    },
+    {
+      "id": "bls_ces_mfg_hours",
+      "name": "Manufacturing: Average Weekly Hours / Overtime (CES)",
+      "source": "bls",
+      "publisher": "Bureau of Labor Statistics — Employment Situation (CES)",
+      "host": "api.bls.gov",
+      "providerSeries": "CES3000000007 (avg weekly hours, mfg)",
+      "role": "predictor",
+      "leadTimeMonths": 1,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "medium — labor demand signal",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "Employment Situation",
+          "referenceLagMonths": 1,
+          "releaseDayRule": "1st Friday of the following month (shifts when it lands on/near a federal holiday)",
+          "approxDayOfMonth": 5,
+          "releaseTimeEt": "08:30",
+          "revisesLater": true,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-02 -> 2026-06", "2026-08-07 -> 2026-07", "2026-09-04 -> 2026-08",
+            "2026-10-02 -> 2026-09", "2026-11-06 -> 2026-10", "2026-12-04 -> 2026-11"
+          ],
+          "caveat": "2026-07-02 (ref 2026-06) is a Thursday, shifted from Jul 3 for the July 4 holiday. Early-2026 dates were shutdown-delayed."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.bls.gov/schedule/news_release/empsit.htm",
+        "https://www.bls.gov/schedule/2026/home.htm"
+      ]
+    },
+    {
+      "id": "bls_ppi_mfg",
+      "name": "PPI — Manufacturing sub-indices",
+      "source": "bls",
+      "publisher": "Bureau of Labor Statistics — Producer Price Index",
+      "host": "api.bls.gov",
+      "providerSeries": "see ppi_series.json lookup",
+      "role": "predictor",
+      "leadTimeMonths": 0,
+      "seasonalAdjustment": "seasonally_adjusted",
+      "predictiveValue": "medium — pricing pressure",
+      "apiAccess": "free_keyed",
+      "cost": 0,
+      "wired": false,
+      "releases": [
+        {
+          "name": "PPI monthly release",
+          "referenceLagMonths": 1,
+          "releaseDayRule": "2nd full week of the following month (about the 11th-15th)",
+          "approxDayOfMonth": 13,
+          "releaseTimeEt": "08:30",
+          "revisesLater": true,
+          "confirmed": true,
+          "confirmed2026": [
+            "2026-07-15 -> 2026-06", "2026-08-13 -> 2026-07", "2026-09-10 -> 2026-08",
+            "2026-10-15 -> 2026-09", "2026-11-13 -> 2026-10", "2026-12-15 -> 2026-11"
+          ],
+          "caveat": "Early-2026 dates were shutdown-delayed; cadence normalized from ~March 2026."
+        }
+      ],
+      "sourceUrls": [
+        "https://www.bls.gov/schedule/news_release/ppi.htm",
+        "https://www.bls.gov/schedule/2026/home.htm"
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "name": "ISM Manufacturing PMI (headline + New Orders sub-index)",
+      "reason": "Paywalled; TOS prohibits redistribution/scraping. Regional Fed surveys act as the free proxy.",
+      "note": "Highest single sentiment signal but not usable for free."
+    },
+    {
+      "name": "S&P Global US Manufacturing PMI (flash + final)",
+      "reason": "Paywalled ($2-5k/yr machine access). Flash beats ISM by ~1 week.",
+      "note": "Phase 3 business decision only."
+    }
+  ]
+}

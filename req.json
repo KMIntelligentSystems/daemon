@@ -1,1 +1,0 @@
-{"schemaVersion":1,"requestId":"rr-b72ad94c-8604-4efd-b7b5-64f7f80f7f89","source":"fred","referenceMonth":"2026-07","targets":["m3_new_orders"],"issuedAt":"2026-07-08T07:20:25.709289200+00:00","signature":{"alg":"HMAC-SHA256","value":"606c8f3a7ae321b30269cca2154195a57b3e0d49a47635b997335df26b1b5b57"}}

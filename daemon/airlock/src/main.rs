@@ -82,8 +82,13 @@ enum Cmd {
     EmitRunRequest {
         #[arg(long, default_value = "fred")]
         source: String,
+        /// Reference month "YYYY-MM", or "auto" to derive it from the resolved
+        /// series' publication lag (config reference_lag_months) at --as-of.
         #[arg(long)]
         month: String,
+        /// Override "today" for `--month auto` (YYYY-MM-DD). Defaults to now.
+        #[arg(long)]
+        as_of: Option<String>,
         /// Comma-separated seriesIds; omit to let the airlock use the source default.
         #[arg(long)]
         series: Option<String>,
@@ -129,23 +134,47 @@ fn main() -> Result<()> {
             drop(cfg);
             service::serve_http(cli.config, cli.db, hmac_key, port, schedule, poll_secs)
         }
-        Cmd::EmitRunRequest { source, month, series, target, model, tamper } => {
-            run_emit(hmac_key, source, month, series, target, model, tamper)
+        Cmd::EmitRunRequest { source, month, as_of, series, target, model, tamper } => {
+            run_emit(cfg, hmac_key, source, month, as_of, series, target, model, tamper)
         }
     }
 }
 
 /// Build + sign a RunRequest and print it to stdout.
 fn run_emit(
+    cfg: Config,
     hmac_key: Vec<u8>,
     source: String,
     month: String,
+    as_of: Option<String>,
     series: Option<String>,
     target: String,
     model: Option<String>,
     tamper: bool,
 ) -> Result<()> {
     let series_list = series.map(|s| s.split(',').map(|x| x.trim().to_string()).filter(|x| !x.is_empty()).collect::<Vec<_>>());
+
+    // "auto" → derive the reference month from the resolved series' publication
+    // lag, so a scheduler/Task Scheduler task never has to hardcode the month.
+    let month = if month == "auto" {
+        let resolved = match &series_list {
+            Some(l) if !l.is_empty() => l.clone(),
+            _ => cfg
+                .sources
+                .get(&source)
+                .map(|s| s.default_series.clone())
+                .ok_or_else(|| anyhow::anyhow!("unknown source '{source}' — cannot resolve --month auto"))?,
+        };
+        let as_of_date = match as_of {
+            Some(s) => chrono::NaiveDate::parse_from_str(&s, "%Y-%m-%d")
+                .with_context(|| format!("parsing --as-of '{s}' (want YYYY-MM-DD)"))?,
+            None => chrono::Utc::now().date_naive(),
+        };
+        service::reference_month_for(&cfg, &resolved, as_of_date)
+    } else {
+        month
+    };
+
     let body = service::make_body(&source, &month, vec![target], series_list, model);
     let mut signed = service::sign_body(&hmac_key, &body);
     if tamper {

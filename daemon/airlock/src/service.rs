@@ -12,7 +12,7 @@
 //! (fetch → store → finish → broadcast); the real LLM oracle arrives in Phase 3.
 
 use anyhow::{anyhow, Result};
-use chrono::Utc;
+use chrono::{Datelike, NaiveDate, Utc};
 use serde::Serialize;
 use std::collections::HashSet;
 use std::time::Duration;
@@ -24,6 +24,28 @@ use crate::tools::{Session, Tools};
 use rusqlite::Connection;
 
 const KNOWN_TARGETS: &[&str] = &["m3_new_orders", "m3_unfilled_orders"];
+
+/// The reference month that becomes newly available when a request's series
+/// publish, computed from each series' configured `reference_lag_months`:
+/// `as_of_month - max(lag)`. The max is conservative — if a request bundles
+/// series with different lags, we pick the month for which *all* are expected
+/// to be out. Series not found / with no lag default to 0 (published in-month).
+///
+/// This is the fix for the old `Utc::now()` behaviour: on a July trigger for a
+/// lag-1 source we request June, not the not-yet-published July.
+pub fn reference_month_for(cfg: &Config, series: &[String], as_of: NaiveDate) -> String {
+    let lag = series
+        .iter()
+        .filter_map(|s| cfg.series_by_id(s))
+        .map(|s| s.reference_lag_months)
+        .max()
+        .unwrap_or(0) as i32;
+    // Absolute month index (0-based month), shift back by lag, reformat.
+    let idx = as_of.year() * 12 + as_of.month0() as i32 - lag;
+    let year = idx.div_euclid(12);
+    let month = (idx.rem_euclid(12) + 1) as u32;
+    format!("{year:04}-{month:02}")
+}
 
 /// A RunRequest that has passed HMAC verification and config gating. Every field
 /// here is guaranteed allowlisted / clamped — the job runner trusts it.
@@ -183,6 +205,30 @@ pub fn run_job(cfg: Config, db_path: &str, hmac_key: Vec<u8>, job: &ValidatedJob
             return JobOutcome::abstain(format!("fetch {series} failed: {}", err_msg(&res)));
         }
         let r = res.result.unwrap_or_default();
+
+        // Abstain guard: the requested reference month must actually be present
+        // in the fetched observations. Without this, a wake that fires before the
+        // data is published stores stale observations under a false month label
+        // and broadcasts them. Instead we treat "not yet published" as a clean
+        // no-op — nothing stored, retried on the next scheduled trigger.
+        let has_ref_month = r
+            .get("observations")
+            .and_then(|o| o.as_array())
+            .map(|arr| {
+                arr.iter().any(|o| {
+                    o.get("date")
+                        .and_then(|d| d.as_str())
+                        .is_some_and(|d| d.starts_with(&job.reference_month))
+                })
+            })
+            .unwrap_or(false);
+        if !has_ref_month {
+            return JobOutcome::abstain(format!(
+                "no observation for {} in series {} - data not published yet; will retry on next trigger",
+                job.reference_month, series
+            ));
+        }
+
         indicators.push(serde_json::json!({
             "seriesId": series,
             "leadTimeMonths": r.get("leadTimeMonths").and_then(|v| v.as_f64()).unwrap_or(0.0),
@@ -413,6 +459,18 @@ fn body_for_entry(entry: &ScheduleEntry, month: &str) -> RunRequestBody {
     make_body(&entry.source, month, entry.targets.clone(), entry.series.clone(), entry.model.clone())
 }
 
+/// The series an entry resolves to: its explicit list, else the source default.
+fn entry_series(cfg: &Config, entry: &ScheduleEntry) -> Vec<String> {
+    match &entry.series {
+        Some(list) if !list.is_empty() => list.clone(),
+        _ => cfg
+            .sources
+            .get(&entry.source)
+            .map(|s| s.default_series.clone())
+            .unwrap_or_default(),
+    }
+}
+
 /// Fire each schedule entry once per (source, month) by POSTing a signed
 /// RunRequest to our own /run. Retries a failed POST on the next poll.
 fn scheduler_loop(cfg: Config, hmac_key: Vec<u8>, port: u16, poll_secs_override: Option<u64>) {
@@ -426,8 +484,11 @@ fn scheduler_loop(cfg: Config, hmac_key: Vec<u8>, port: u16, poll_secs_override:
     eprintln!("[scheduler] loop started: poll={poll}s, {} entr{}", cfg.schedule.entries.len(), if cfg.schedule.entries.len() == 1 { "y" } else { "ies" });
 
     loop {
-        let month = Utc::now().format("%Y-%m").to_string();
+        let as_of = Utc::now().date_naive();
         for entry in &cfg.schedule.entries {
+            // Per-entry reference month: current month minus the source's
+            // publication lag, so we request data that is actually published.
+            let month = reference_month_for(&cfg, &entry_series(&cfg, entry), as_of);
             let key = (entry.source.clone(), month.clone());
             if fired.contains(&key) {
                 continue;
