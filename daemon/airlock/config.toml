@@ -37,8 +37,15 @@ base_url = "https://api.stlouisfed.org/fred/series/observations"
 api_key_env = "FRED_API_KEY"
 default_series = ["fred_mcumfn"]   # fetched when a RunRequest omits `series`
 
-# One series wired for Phase 1. seriesId (id) is the grammar enum value;
-# provider_series_id is what the source API expects.
+# ==========================================================================
+# FRED leading-indicator series (Phase 2 wiring — all 9 are live)
+# ==========================================================================
+# Fields mirror data/lookups/leading_indicators.json.  All 9 share the same
+# FRED source, so they use the identical ureq GET path already wired.
+# Only reference_lag_months and the value-range bounds differ across series.
+
+# --- Phase 1 (already wired) ------------------------------------------------
+
 [[series]]
 id = "fred_mcumfn"
 source = "fred"
@@ -46,9 +53,166 @@ provider_series_id = "MCUMFN"
 unit = "Percent"
 seasonal_adjustment = "seasonally_adjusted"
 lead_time_months = 0.0
-# G.17 publishes mid-month for the PRIOR month → lag 1. The scheduler requests
-# (current month − 1); a wake before the release abstains (no ref-month obs yet).
-# See data/lookups/leading_indicators.json for the full release calendar.
 reference_lag_months = 1
 min_value = 0.0
 max_value = 200.0
+
+# --- Phase 2 — G.17 capacity / production ----------------------------------
+
+[[series]]
+id = "fred_tcu"
+source = "fred"
+provider_series_id = "TCU"
+unit = "Percent"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 0.0
+reference_lag_months = 1
+min_value = 0.0
+max_value = 200.0
+
+[[series]]
+id = "fred_ipman"
+source = "fred"
+provider_series_id = "IPMAN"
+unit = "Index 2017=100"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 0.0
+reference_lag_months = 1
+min_value = 0.0
+max_value = 500.0
+
+# --- Phase 2 — Chicago Fed National Activity Index --------------------------
+
+[[series]]
+id = "fred_cfnai"
+source = "fred"
+provider_series_id = "CFNAI"
+unit = "Index"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 0.0
+reference_lag_months = 1
+min_value = -10.0
+max_value = 10.0
+
+# --- Phase 2 — Regional Fed manufacturing surveys (lag-0, current-month) ---
+
+[[series]]
+id = "fred_empire_state_mfg"
+source = "fred"
+provider_series_id = "GACDISA066MSFRBNY"
+unit = "Index"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 0
+min_value = -80.0
+max_value = 80.0
+
+[[series]]
+id = "fred_philly_fed_mfg"
+source = "fred"
+provider_series_id = "GACDFSA066MSFRBPHI"
+unit = "Index"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 0
+min_value = -80.0
+max_value = 80.0
+
+[[series]]
+id = "fred_richmond_fed_mfg"
+source = "fred"
+provider_series_id = "MFGCI"
+unit = "Index"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 0
+min_value = -80.0
+max_value = 80.0
+
+[[series]]
+id = "fred_dallas_fed_mfg"
+source = "fred"
+provider_series_id = "BACTSAMFRBDAL"
+unit = "Index"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 0
+min_value = -80.0
+max_value = 80.0
+
+[[series]]
+id = "fred_kansas_city_fed_mfg"
+source = "fred"
+provider_series_id = "MOCMFG"
+unit = "Index"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 0
+min_value = -80.0
+max_value = 80.0
+
+# ==========================================================================
+# Census M3 EITS — targets (Phase B wiring)
+# ==========================================================================
+
+[sources.census]
+host = "api.census.gov"
+base_url = "https://api.census.gov/data/timeseries/eits/m3"
+api_key_env = "CENSUS_API_KEY"
+default_series = []
+
+[[series]]
+id = "m3_new_orders"
+source = "census"
+provider_series_id = "MTM:NO:NSA"
+unit = "Millions of Dollars"
+seasonal_adjustment = "not_seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 2
+min_value = 0.0
+max_value = 1000000.0
+
+[[series]]
+id = "m3_unfilled_orders"
+source = "census"
+provider_series_id = "MTM:UO:NSA"
+unit = "Millions of Dollars"
+seasonal_adjustment = "not_seasonally_adjusted"
+lead_time_months = 0.0
+reference_lag_months = 2
+min_value = 0.0
+max_value = 5000000.0
+
+# ==========================================================================
+# BLS — predictors (Phase C wiring)
+# ==========================================================================
+# BLS API v2 uses POST with JSON body (not GET).  The fetch_bls method handles
+# this; "registrationkey" goes in the POST body, not as a query param.
+
+[sources.bls]
+host = "api.bls.gov"
+base_url = "https://api.bls.gov/publicAPI/v2/timeseries/data/"
+api_key_env = "BLS_API_KEY"
+default_series = []
+
+[[series]]
+id = "bls_ces_mfg_hours"
+source = "bls"
+provider_series_id = "CES3000000007"
+unit = "Hours"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 1
+min_value = 0.0
+max_value = 100.0
+
+[[series]]
+id = "bls_ppi_mfg"
+source = "bls"
+provider_series_id = "PCUOMFGOMFG"
+unit = "Index"
+seasonal_adjustment = "not_seasonally_adjusted"
+lead_time_months = 0.0
+reference_lag_months = 1
+min_value = 0.0
+max_value = 500.0

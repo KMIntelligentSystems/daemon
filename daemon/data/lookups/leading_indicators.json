@@ -21,7 +21,7 @@
       "leadTimeMonths": 0,
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Advance Report on Durable Goods (M3-1)",
@@ -69,7 +69,7 @@
       "leadTimeMonths": 0,
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Full Report on Manufacturers' Shipments, Inventories and Orders (M3)",
@@ -138,7 +138,7 @@
       "predictiveValue": "high — supply-side pressure",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "G.17 monthly release",
@@ -171,7 +171,7 @@
       "predictiveValue": "medium — sector composition",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "G.17 monthly release",
@@ -204,7 +204,7 @@
       "predictiveValue": "high — earliest ISM proxy; current-month sentiment",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Empire State Manufacturing Survey",
@@ -239,7 +239,7 @@
       "predictiveValue": "high — ISM proxy; current-month sentiment",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Manufacturing Business Outlook Survey",
@@ -274,7 +274,7 @@
       "predictiveValue": "high — ISM proxy; current-month sentiment",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Fifth District Survey of Manufacturing Activity",
@@ -309,7 +309,7 @@
       "predictiveValue": "high — ISM proxy; current-month sentiment",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Texas Manufacturing Outlook Survey",
@@ -344,7 +344,7 @@
       "predictiveValue": "high — ISM proxy; current-month sentiment",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Tenth District Manufacturing Survey",
@@ -379,7 +379,7 @@
       "predictiveValue": "medium — broad activity composite",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "CFNAI monthly release",
@@ -413,7 +413,7 @@
       "predictiveValue": "medium — labor demand signal",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "Employment Situation",
@@ -448,7 +448,7 @@
       "predictiveValue": "medium — pricing pressure",
       "apiAccess": "free_keyed",
       "cost": 0,
-      "wired": false,
+      "wired": true,
       "releases": [
         {
           "name": "PPI monthly release",
