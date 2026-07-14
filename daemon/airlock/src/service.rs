@@ -392,6 +392,31 @@ fn handle_run(config_path: &str, db_path: &str, hmac_key: &[u8], raw: &str) -> (
     };
 
     let outcome = run_job(cfg, db_path, hmac_key.to_vec(), &job);
+
+    // If a broadcast was built, POST it to the main server.
+    if let Some(ref bc) = outcome.broadcast {
+        if let Ok(main_url) = std::env::var("DAEMON_MAIN_URL") {
+            let broadcast_json = serde_json::to_string(&bc).unwrap_or_default();
+            match ureq::post(&format!("{main_url}/ui/api/daemon/broadcast"))
+                .set("Content-Type", "application/json")
+                .send_string(&broadcast_json)
+            {
+                Ok(_resp) => eprintln!(
+                    "[job] BROADCAST POSTed to main server dataset={} hash={}",
+                    outcome.dataset_id.as_deref().unwrap_or("?"),
+                    outcome.content_hash.as_deref().unwrap_or("?")
+                ),
+                Err(e) => eprintln!("[job] BROADCAST POST failed: {e}"),
+            }
+        } else {
+            eprintln!(
+                "[job] BROADCAST (would POST to main server) dataset={} hash={}  (set DAEMON_MAIN_URL to enable)",
+                outcome.dataset_id.as_deref().unwrap_or("?"),
+                outcome.content_hash.as_deref().unwrap_or("?")
+            );
+        }
+    }
+
     let code = if outcome.status == "error" { 500 } else { 200 };
     let body = serde_json::to_string(&serde_json::json!({ "ok": true, "requestId": rid, "outcome": outcome }))
         .unwrap_or_else(|_| "{}".into());
