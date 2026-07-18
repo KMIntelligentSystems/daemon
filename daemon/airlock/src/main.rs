@@ -100,6 +100,16 @@ enum Cmd {
         #[arg(long)]
         tamper: bool,
     },
+    /// Build a v2 envelope for a synthetic dataset and print it (dev fixture for
+    /// cross-language signature verification; needs no API keys).
+    EmitBroadcastFixture {
+        #[arg(long, default_value = "2026-06")]
+        month: String,
+        #[arg(long, default_value = "m3_new_orders")]
+        target: String,
+        #[arg(long, default_value = "fred")]
+        source: String,
+    },
 }
 
 fn load_hmac_key() -> Vec<u8> {
@@ -136,6 +146,9 @@ fn main() -> Result<()> {
         }
         Cmd::EmitRunRequest { source, month, as_of, series, target, model, tamper } => {
             run_emit(cfg, hmac_key, source, month, as_of, series, target, model, tamper)
+        }
+        Cmd::EmitBroadcastFixture { month, target, source } => {
+            run_emit_broadcast_fixture(hmac_key, month, target, source)
         }
     }
 }
@@ -471,5 +484,27 @@ fn print_call(call: &ToolCall) -> Result<()> {
 }
 fn print_result(res: &ToolResult) -> Result<()> {
     eprintln!("  ← ToolResult {}", serde_json::to_string(res)?);
+    Ok(())
+}
+
+/// Build a v2 envelope for a synthetic dataset and print it to stdout. Dev
+/// fixture for cross-language signature verification — needs no API keys, no DB.
+fn run_emit_broadcast_fixture(hmac_key: Vec<u8>, month: String, target: String, source: String) -> Result<()> {
+    use tools::{StoredDataset, build_envelope};
+    // A synthetic but well-formed stored dataset: hash of a fixed body so the
+    // fixture is reproducible for the same inputs.
+    let dataset_id = format!("ds-{}", uuid::Uuid::new_v4());
+    let content_hash = crate::crypto::sha256_hex(format!("{dataset_id}:{month}:{target}:{source}").as_bytes());
+    let stored = StoredDataset {
+        dataset_id,
+        content_hash,
+        target,
+        reference_month: month,
+        source,
+        release_date: chrono::Utc::now().format("%Y-%m-%d").to_string(),
+        series_included: vec!["fred_mcumfn".to_string()],
+    };
+    let env = build_envelope(&hmac_key, &stored)?;
+    println!("{}", serde_json::to_string_pretty(&env)?);
     Ok(())
 }

@@ -61,6 +61,18 @@ impl Tools {
                 content_hash   TEXT NOT NULL,
                 body           TEXT NOT NULL,
                 created_at     TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS broadcast_outbox (
+                broadcast_id    TEXT PRIMARY KEY,
+                dataset_id      TEXT NOT NULL,
+                target_url      TEXT NOT NULL,
+                envelope_json   TEXT NOT NULL,
+                state           TEXT NOT NULL,
+                attempts        INTEGER NOT NULL DEFAULT 0,
+                next_attempt_at TEXT NOT NULL,
+                last_error      TEXT,
+                created_at      TEXT NOT NULL,
+                updated_at      TEXT NOT NULL
              );",
         )?;
         let http = ureq::AgentBuilder::new()
@@ -591,25 +603,68 @@ impl Tools {
         )
     }
 
-    /// Build + HMAC-sign the availability broadcast for a stored dataset.
-    pub fn build_broadcast(&self, stored: &StoredDataset) -> Result<AvailabilityBroadcast> {
-        let body = BroadcastBody {
-            schema_version: SCHEMA_VERSION,
-            broadcast_id: format!("bc-{}", uuid::Uuid::new_v4()),
-            dataset_id: stored.dataset_id.clone(),
-            reference_month: stored.reference_month.clone(),
-            target: stored.target.clone(),
-            source: stored.source.clone(),
-            series_included: stored.series_included.clone(),
-            release_date: stored.release_date.clone(),
-            content_hash: stored.content_hash.clone(),
-            emitted_at: Utc::now().to_rfc3339(),
-        };
-        let signable = serde_json::to_string(&body)?;
-        let sig = hmac_sha256_hex(&self.hmac_key, signable.as_bytes());
-        Ok(AvailabilityBroadcast {
-            body,
-            signature: Signature { alg: "HMAC-SHA256".to_string(), value: sig },
-        })
+    /// Build the envelope-v2 broadcast for a stored dataset (delegates to the
+    /// free `build_envelope` so the fixture path can sign without a Tools).
+    pub fn build_broadcast(&self, stored: &StoredDataset) -> Result<EnvelopeV2> {
+        build_envelope(&self.hmac_key, stored)
     }
+
+    /// Enqueue a built envelope into the durable broadcast outbox. The
+    /// dispatcher thread (service.rs) later POSTs it to the target daemon and
+    /// parses the BroadcastResponse. Storing the envelope durably means a
+    /// target outage is retried after recovery without refetching.
+    pub fn enqueue_outbox(&self, bc: &EnvelopeV2, target_url: &str) -> Result<()> {
+        let body_bytes = crate::crypto::base64_decode(&bc.body_b64)
+            .context("decoding envelope body for outbox")?;
+        let body: BroadcastBody = serde_json::from_slice(&body_bytes)
+            .context("parsing envelope body for outbox")?;
+        let now = Utc::now().to_rfc3339();
+        self.db.execute(
+            "INSERT INTO broadcast_outbox
+               (broadcast_id, dataset_id, target_url, envelope_json, state,
+                attempts, next_attempt_at, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'pending', 0, ?5, ?6, ?6)
+             ON CONFLICT(broadcast_id) DO NOTHING",
+            rusqlite::params![
+                body.broadcast_id,
+                body.dataset_id,
+                target_url,
+                serde_json::to_string(bc)?,
+                now,
+                now,
+            ],
+        ).context("insert outbox row")?;
+        Ok(())
+    }
+}
+
+/// Free-function envelope builder: serializes BroadcastBody to canonical JSON
+/// (serde declaration order), base64-encodes those exact bytes, and HMACs the
+/// raw bytes. Used by `build_broadcast` (via Tools) and by the fixture path
+/// (no Tools instance needed).
+pub fn build_envelope(hmac_key: &[u8], stored: &StoredDataset) -> Result<EnvelopeV2> {
+    let body = BroadcastBody {
+        schema_version: SCHEMA_VERSION,
+        broadcast_id: format!("bc-{}", uuid::Uuid::new_v4()),
+        dataset_id: stored.dataset_id.clone(),
+        reference_month: stored.reference_month.clone(),
+        target: stored.target.clone(),
+        source: stored.source.clone(),
+        series_included: stored.series_included.clone(),
+        release_date: stored.release_date.clone(),
+        content_hash: stored.content_hash.clone(),
+        emitted_at: Utc::now().to_rfc3339(),
+    };
+    let body_bytes = serde_json::to_vec(&body)?; // canonical, compact, declaration order
+    let sig = hmac_sha256_hex(hmac_key, &body_bytes);
+    let key_id = std::env::var("DAEMON_KEY_ID").unwrap_or_else(|_| "daemon-dev-1".to_string());
+    Ok(EnvelopeV2 {
+        schema_version: 2,
+        body_b64: crate::crypto::base64_encode(&body_bytes),
+        signature: SignatureV2 {
+            alg: "HMAC-SHA256".to_string(),
+            key_id,
+            value: sig,
+        },
+    })
 }

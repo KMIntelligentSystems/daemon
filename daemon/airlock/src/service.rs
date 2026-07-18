@@ -23,7 +23,7 @@ use crate::grammar::*;
 use crate::tools::{Session, Tools};
 use rusqlite::Connection;
 
-const KNOWN_TARGETS: &[&str] = &["m3_new_orders", "m3_unfilled_orders"];
+const KNOWN_TARGETS: &[&str] = &["m3_new_orders", "m3_unfilled_orders", "m3_shipments", "mfg_capacity"];
 
 /// The reference month that becomes newly available when a request's series
 /// publish, computed from each series' configured `reference_lag_months`:
@@ -72,7 +72,7 @@ pub struct JobOutcome {
     pub series_included: Vec<String>,
     pub note: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub broadcast: Option<AvailabilityBroadcast>,
+    pub broadcast: Option<EnvelopeV2>,
 }
 
 impl JobOutcome {
@@ -264,24 +264,36 @@ pub fn run_job(cfg: Config, db_path: &str, hmac_key: Vec<u8>, job: &ValidatedJob
     let (_finish_res, status) = tools.dispatch(&finish_call, &mut session);
     let status = status.unwrap_or_else(|| "abstain".into());
 
-    if status == "stored" {
-        if let Some(stored) = session.stored.clone() {
-            return match tools.build_broadcast(&stored) {
-                Ok(bc) => {
-                    eprintln!("[job] BROADCAST (would POST to main server) dataset={} hash={}", stored.dataset_id, stored.content_hash);
-                    JobOutcome {
-                        status: "stored".into(),
-                        dataset_id: Some(stored.dataset_id.clone()),
-                        content_hash: Some(stored.content_hash.clone()),
-                        series_included: stored.series_included.clone(),
-                        note: "stored and broadcast built".into(),
-                        broadcast: Some(bc),
+        if status == "stored" {
+            if let Some(stored) = session.stored.clone() {
+                return match tools.build_broadcast(&stored) {
+                    Ok(bc) => {
+                        // Durably enqueue for the dispatcher; never POST inline
+                        // (an HTTP 200 alone is not acceptance — the dispatcher
+                        // parses the BroadcastResponse).
+                        if let Ok(main_url) = std::env::var("DAEMON_MAIN_URL") {
+                            let target_url = format!("{main_url}/ui/api/daemon/broadcast");
+                            if let Err(e) = tools.enqueue_outbox(&bc, &target_url) {
+                                eprintln!("[job] outbox enqueue failed: {e}");
+                            } else {
+                                eprintln!("[job] BROADCAST enqueued dataset={} hash={}", stored.dataset_id, stored.content_hash);
+                            }
+                        } else {
+                            eprintln!("[job] BROADCAST built but DAEMON_MAIN_URL unset; dataset={} not enqueued", stored.dataset_id);
+                        }
+                        JobOutcome {
+                            status: "stored".into(),
+                            dataset_id: Some(stored.dataset_id.clone()),
+                            content_hash: Some(stored.content_hash.clone()),
+                            series_included: stored.series_included.clone(),
+                            note: "stored and broadcast enqueued".into(),
+                            broadcast: Some(bc),
+                        }
                     }
-                }
-                Err(e) => JobOutcome::error(format!("broadcast build failed: {e}")),
-            };
+                    Err(e) => JobOutcome::error(format!("broadcast build failed: {e}")),
+                };
+            }
         }
-    }
     JobOutcome::abstain(format!("finished with status '{status}', nothing stored"))
 }
 
@@ -393,29 +405,9 @@ fn handle_run(config_path: &str, db_path: &str, hmac_key: &[u8], raw: &str) -> (
 
     let outcome = run_job(cfg, db_path, hmac_key.to_vec(), &job);
 
-    // If a broadcast was built, POST it to the main server.
-    if let Some(ref bc) = outcome.broadcast {
-        if let Ok(main_url) = std::env::var("DAEMON_MAIN_URL") {
-            let broadcast_json = serde_json::to_string(&bc).unwrap_or_default();
-            match ureq::post(&format!("{main_url}/ui/api/daemon/broadcast"))
-                .set("Content-Type", "application/json")
-                .send_string(&broadcast_json)
-            {
-                Ok(_resp) => eprintln!(
-                    "[job] BROADCAST POSTed to main server dataset={} hash={}",
-                    outcome.dataset_id.as_deref().unwrap_or("?"),
-                    outcome.content_hash.as_deref().unwrap_or("?")
-                ),
-                Err(e) => eprintln!("[job] BROADCAST POST failed: {e}"),
-            }
-        } else {
-            eprintln!(
-                "[job] BROADCAST (would POST to main server) dataset={} hash={}  (set DAEMON_MAIN_URL to enable)",
-                outcome.dataset_id.as_deref().unwrap_or("?"),
-                outcome.content_hash.as_deref().unwrap_or("?")
-            );
-        }
-    }
+    // Delivery is handled by the outbox dispatcher thread (serve_http), which
+    // parses the BroadcastResponse. No inline POST here — run_job already
+    // enqueued the envelope durably.
 
     let code = if outcome.status == "error" { 500 } else { 200 };
     let body = serde_json::to_string(&serde_json::json!({ "ok": true, "requestId": rid, "outcome": outcome }))
@@ -432,14 +424,26 @@ pub fn serve_http(
     schedule: bool,
     poll_secs_override: Option<u64>,
 ) -> Result<()> {
-    let server = tiny_http::Server::http(("127.0.0.1", port))
-        .map_err(|e| anyhow!("failed to bind 127.0.0.1:{port}: {e}"))?;
-    eprintln!("[airlock] serving on http://127.0.0.1:{port}  (POST /run, GET /health)");
+    // Bind all interfaces so the service is reachable cross-container on
+    // Railway (the host expects 0.0.0.0:$PORT). Endpoints remain HMAC-authed,
+    // so the wider bind does not widen trust. The scheduler's self-POST to
+    // 127.0.0.1 still resolves to this listener.
+    let server = tiny_http::Server::http(("0.0.0.0", port))
+        .map_err(|e| anyhow!("failed to bind 0.0.0.0:{port}: {e}"))?;
+    eprintln!("[airlock] serving on http://0.0.0.0:{port}  (POST /run, GET /health, GET /datasets/:id)");
 
     if schedule {
         let cfg = Config::load(&config_path)?;
         let key = hmac_key.clone();
         std::thread::spawn(move || scheduler_loop(cfg, key, port, poll_secs_override));
+    }
+
+    // Outbox dispatcher: durable delivery of broadcasts to the target daemon.
+    // Survives target outages via capped exponential backoff + jitter; parses
+    // the BroadcastResponse (HTTP 200 alone is not acceptance).
+    {
+        let db_path_disp = db_path.clone();
+        std::thread::spawn(move || outbox_dispatcher_loop(db_path_disp));
     }
 
     let json_header = tiny_http::Header::from_bytes(&b"Content-Type"[..], &b"application/json"[..])
@@ -478,7 +482,124 @@ pub fn serve_http(
     Ok(())
 }
 
-// ---- built-in scheduler (in-process stand-in for cron / Task Scheduler) --
+// ---- broadcast outbox dispatcher ------------------------------------------
+
+/// Capped exponential backoff with jitter (seconds) for retryable deliveries.
+fn backoff_secs(attempts: u32) -> u64 {
+    let base = 1u64 << attempts.min(6); // 1,2,4,8,16,32,64
+    let jitter = (uuid::Uuid::new_v4().as_u128() as u64) % 4;
+    (base + jitter).min(3600)
+}
+
+/// Classify a `BroadcastResponse` decision into a terminal outbox state.
+/// `accept` and `reject: duplicate` are accepted (idempotent delivery).
+fn classify_decision(decision: &str, reason: Option<&str>) -> &'static str {
+    match decision {
+        "accept" => "accepted",
+        "reject" => match reason {
+            Some("duplicate") => "accepted",
+            // Schema/signature/content failures won't succeed on retry.
+            Some("bad_signature") | Some("schema_mismatch") | Some("unknown_series")
+            | Some("content_hash_mismatch") | Some("out_of_window") => "rejected_terminal",
+            // Transient target-side failure; retry later.
+            Some("storage_error") | _ => "retryable",
+        },
+        _ => "retryable",
+    }
+}
+
+/// Long-lived loop that drains the outbox. Owns its own SQLite connection
+/// (rusqlite Connection is not Sync) and HTTP agent. HTTP 200 is not
+/// acceptance — the dispatcher requires a parsed `accept` decision.
+fn outbox_dispatcher_loop(db_path: String) {
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(30))
+        .redirects(0)
+        .build();
+    eprintln!("[outbox] dispatcher started");
+    loop {
+        drain_outbox_once(&db_path, &agent);
+        std::thread::sleep(Duration::from_secs(5));
+    }
+}
+
+fn drain_outbox_once(db_path: &str, agent: &ureq::Agent) {
+    let db = match Connection::open(db_path) {
+        Ok(d) => d,
+        Err(e) => { eprintln!("[outbox] db open: {e}"); return; }
+    };
+    let now = Utc::now().to_rfc3339();
+    // Claim up to 16 rows whose next attempt is due.
+    let rows: Vec<(String, String)> = match db.prepare(
+        "SELECT broadcast_id, envelope_json FROM broadcast_outbox
+         WHERE state IN ('pending','retryable') AND next_attempt_at <= ?1
+         ORDER BY next_attempt_at ASC LIMIT 16",
+    ) {
+        Ok(mut s) => s.query_map([now.clone()], |r| Ok((r.get::<_,String>(0)?, r.get::<_,String>(1)?)))
+            .ok().into_iter().flatten().filter_map(|x| x.ok()).collect(),
+        Err(e) => { eprintln!("[outbox] query: {e}"); return; }
+    };
+    for (broadcast_id, envelope_json) in rows {
+        // Mark delivering (best-effort; the row is single-owner by broadcast_id).
+        let _ = db.execute(
+            "UPDATE broadcast_outbox SET state='delivering', updated_at=?1 WHERE broadcast_id=?2 AND state IN ('pending','retryable')",
+            rusqlite::params![now, broadcast_id],
+        );
+        let outcome = deliver_one(agent, &envelope_json);
+        let (state, attempts_inc, err) = match outcome {
+            DeliveryOutcome::Accepted => ("accepted", 0, None),
+            DeliveryOutcome::RejectedTerminal(r) => ("rejected_terminal", 0, Some(r)),
+            DeliveryOutcome::Retryable(r) => ("retryable", 1, Some(r)),
+        };
+        let attempts: i64 = db.query_row(
+            "SELECT attempts FROM broadcast_outbox WHERE broadcast_id=?1", [&broadcast_id], |r| r.get(0),
+        ).unwrap_or(0);
+        let new_attempts = (attempts + attempts_inc) as u32;
+        let next = Utc::now() + chrono::Duration::seconds(backoff_secs(new_attempts) as i64);
+        let _ = db.execute(
+            "UPDATE broadcast_outbox SET state=?1, attempts=?2, next_attempt_at=?3, last_error=?4, updated_at=?5 WHERE broadcast_id=?6",
+            rusqlite::params![state, new_attempts, next.to_rfc3339(), err, Utc::now().to_rfc3339(), broadcast_id],
+        );
+        eprintln!("[outbox] {} -> {}", broadcast_id, state);
+    }
+}
+
+enum DeliveryOutcome {
+    Accepted,
+    RejectedTerminal(String),
+    Retryable(String),
+}
+
+fn deliver_one(agent: &ureq::Agent, envelope_json: &str) -> DeliveryOutcome {
+    // The envelope carries its target_url? No — target_url is per-row. We POST
+    // to DAEMON_MAIN_URL/ui/api/daemon/broadcast. (target_url column is kept
+    // for future per-row routing but the dispatcher uses the env var for now.)
+    let main_url = match std::env::var("DAEMON_MAIN_URL") {
+        Ok(u) => u,
+        Err(_) => return DeliveryOutcome::Retryable("DAEMON_MAIN_URL unset".into()),
+    };
+    let url = format!("{main_url}/ui/api/daemon/broadcast");
+    let resp = agent.post(&url).set("Content-Type", "application/json").send_string(envelope_json);
+    match resp {
+        Ok(r) => {
+            let body = r.into_string().unwrap_or_default();
+            // Parse BroadcastResponse {schemaVersion, broadcastId, decision, reason}
+            let v: serde_json::Value = match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(e) => return DeliveryOutcome::Retryable(format!("unparseable response: {e}")),
+            };
+            let decision = v.get("decision").and_then(|d| d.as_str()).unwrap_or("");
+            let reason = v.get("reason").and_then(|r| r.as_str()).map(String::from);
+            match classify_decision(decision, reason.as_deref()) {
+                "accepted" => DeliveryOutcome::Accepted,
+                "rejected_terminal" => DeliveryOutcome::RejectedTerminal(reason.unwrap_or_default()),
+                _ => DeliveryOutcome::Retryable(reason.unwrap_or_else(|| format!("decision={decision}")).into()),
+            }
+        }
+        Err(ureq::Error::Status(_code, _)) => DeliveryOutcome::Retryable(format!("HTTP non-2xx")),
+        Err(e) => DeliveryOutcome::Retryable(format!("transport: {e}")),
+    }
+}
 
 fn body_for_entry(entry: &ScheduleEntry, month: &str) -> RunRequestBody {
     make_body(&entry.source, month, entry.targets.clone(), entry.series.clone(), entry.model.clone())

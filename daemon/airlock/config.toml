@@ -28,8 +28,18 @@ poll_secs = 3600   # how often the interval loop checks; override on the CLI for
 
 [[schedule.entries]]
 source = "fred"
+targets = ["mfg_capacity"]
+# series omitted → the source's default_series is used (fred_mcumfn)
+
+[[schedule.entries]]
+source = "census"
 targets = ["m3_new_orders"]
-# series omitted → the source's default_series is used
+series = ["m3_new_orders", "m3_unfilled_orders"]
+
+[[schedule.entries]]
+source = "census"
+targets = ["m3_shipments"]
+series = ["m3_total_shipments_nsa"]
 
 [sources.fred]
 host = "api.stlouisfed.org"
@@ -182,6 +192,20 @@ lead_time_months = 0.0
 reference_lag_months = 2
 min_value = 0.0
 max_value = 5000000.0
+
+# Observed M3 total shipments (NSA) — the actual series the STL and SARIMA
+# forecast products decompose/forecast. Previously absent from the daemon's
+# closed config; added in P2 so the source can broadcast the observed point.
+[[series]]
+id = "m3_total_shipments_nsa"
+source = "census"
+provider_series_id = "MTM:VS:NSA"
+unit = "Millions of Dollars"
+seasonal_adjustment = "not_seasonally_adjusted"
+lead_time_months = 0.0
+reference_lag_months = 2
+min_value = 0.0
+max_value = 10000000.0
 
 # ==========================================================================
 # BLS — predictors (Phase C wiring)

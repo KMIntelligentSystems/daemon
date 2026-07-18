@@ -100,13 +100,29 @@ pub struct BroadcastBody {
     pub emitted_at: String,
 }
 
+// ---- Envelope v2 (sign-what-you-send) -----------------------------------
+// Replaces the flattened v1 AvailabilityBroadcast. The signed bytes are
+// transported verbatim as bodyB64 (base64 of the canonical BroadcastBody
+// JSON the daemon serialized). The verifier base64-decodes, HMACs those
+// exact bytes, and compares in constant time. No cross-language JSON field
+// ordering assumptions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AvailabilityBroadcast {
-    #[serde(flatten)]
-    pub body: BroadcastBody,
-    pub signature: Signature,
+pub struct EnvelopeV2 {
+    pub schema_version: u32, // 2
+    pub body_b64: String,    // base64(utf8(serde_json::to_string(&BroadcastBody)))
+    pub signature: SignatureV2,
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureV2 {
+    pub alg: String,   // "HMAC-SHA256" (Ed25519 in a later hardening phase)
+    pub key_id: String, // rotation support; resolves to a key in the verifier's trust set
+    pub value: String,  // hex HMAC-SHA256 over the DECODED body_b64 bytes
+}
+
+// ---- Legacy v1 (superseded by EnvelopeV2; `Signature` is still used by RunRequest) ----
 
 // ---- RunRequest (inbound control contract, v6) ---------------------------
 

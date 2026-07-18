@@ -1,91 +1,52 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://daemon.local/grammar/availability-broadcast.schema.json",
-  "title": "AvailabilityBroadcast",
-  "description": "v1 — the pre-determined grammar the daemon broadcasts to the main server after storing a dataset. Lightweight announcement + integrity envelope; carries no observation values. The server accepts or rejects (see broadcast-response.schema.json); on accept the orchestrator pulls the full IndicatorDataset by datasetId.",
+  "title": "AvailabilityBroadcast (Envelope v2)",
+  "description": "v2 — sign-what-you-send envelope. The daemon serializes the BroadcastBody to canonical JSON, base64-encodes those exact bytes as bodyB64, and HMACs the DECODED bytes. The verifier base64-decodes, re-HMACs the same bytes, and compares in constant time. No cross-language JSON field-ordering assumptions. Carries no observation values; the target pulls the full IndicatorDataset by datasetId after accept.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "broadcastId", "datasetId", "referenceMonth", "target", "source", "seriesIncluded", "releaseDate", "contentHash", "signature", "emittedAt"],
+  "required": ["schemaVersion", "bodyB64", "signature"],
   "properties": {
-    "schemaVersion": { "const": 1 },
-    "broadcastId": {
+    "schemaVersion": { "const": 2 },
+    "bodyB64": {
       "type": "string",
-      "pattern": "^bc-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "description": "bc-<uuid v4>. Echoed in the BroadcastResponse for correlation."
-    },
-    "datasetId": {
-      "type": "string",
-      "pattern": "^ds-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
-      "description": "The stored IndicatorDataset this broadcast announces. The orchestrator pulls by this id."
-    },
-    "referenceMonth": {
-      "type": "string",
-      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$"
-    },
-    "target": {
-      "type": "string",
-      "enum": ["m3_new_orders", "m3_unfilled_orders"]
-    },
-    "source": {
-      "type": "string",
-      "enum": ["census", "fred", "bls"]
-    },
-    "seriesIncluded": {
-      "type": "array",
-      "minItems": 1,
-      "maxItems": 64,
-      "description": "seriesIds present in the stored dataset, so the server can decide relevance before pulling.",
-      "items": {
-        "type": "string",
-        "enum": [
-          "m3_new_orders",
-          "m3_unfilled_orders",
-          "fred_tcu",
-          "fred_mcumfn",
-          "fred_ipman",
-          "fred_ipman_durables",
-          "fred_ipman_nondurables",
-          "fred_ipman_motor_vehicles",
-          "bls_ces_mfg_hours",
-          "bls_ces_mfg_overtime",
-          "bls_ces_temp_help",
-          "bls_ppi_mfg",
-          "philly_fed",
-          "empire_state",
-          "dallas_fed",
-          "richmond_fed",
-          "kansas_city_fed",
-          "cfnai",
-          "building_permits",
-          "new_home_sales"
-        ]
-      }
-    },
-    "releaseDate": {
-      "type": "string",
-      "format": "date"
-    },
-    "contentHash": {
-      "type": "string",
-      "pattern": "^[0-9a-f]{64}$",
-      "description": "SHA-256 hex of the canonical stored IndicatorDataset JSON. The server re-checks this after pulling to confirm it got what was announced."
+      "description": "base64 (RFC 4648) of the canonical BroadcastBody JSON bytes the daemon signed."
     },
     "signature": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["alg", "value"],
+      "required": ["alg", "keyId", "value"],
       "properties": {
         "alg": { "const": "HMAC-SHA256" },
+        "keyId": {
+          "type": "string",
+          "description": "Identifies the signing key in the verifier's trust set. Enables rotation (and a later Ed25519 upgrade) without an envelope reshuffle."
+        },
         "value": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
-          "description": "HMAC-SHA256 over the canonical broadcast body (all fields except signature), keyed by the shared secret. Authenticates the daemon to the main server."
+          "description": "hex HMAC-SHA256 over the DECODED bodyB64 bytes, keyed by the daemon secret. Authenticates the daemon to the target."
         }
       }
-    },
-    "emittedAt": {
-      "type": "string",
-      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "BroadcastBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "broadcastId", "datasetId", "referenceMonth", "target", "source", "seriesIncluded", "releaseDate", "contentHash", "emittedAt"],
+      "properties": {
+        "schemaVersion": { "const": 1 },
+        "broadcastId": { "type": "string", "pattern": "^bc-[0-9a-f-]+$" },
+        "datasetId": { "type": "string", "pattern": "^ds-[0-9a-f-]+$" },
+        "referenceMonth": { "type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])$" },
+        "target": { "type": "string" },
+        "source": { "type": "string" },
+        "seriesIncluded": { "type": "array", "minItems": 1, "maxItems": 64, "items": { "type": "string" } },
+        "releaseDate": { "type": "string", "format": "date" },
+        "contentHash": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "emittedAt": { "type": "string", "format": "date-time" }
+      }
     }
   }
 }
