@@ -528,6 +528,28 @@ fn drain_outbox_once(db_path: &str, agent: &ureq::Agent) {
         Ok(d) => d,
         Err(e) => { eprintln!("[outbox] db open: {e}"); return; }
     };
+    // Ensure the outbox table exists on THIS connection. The table is also
+    // created by Tools::open (the per-job path), but the dispatcher may run
+    // before any job has — or against an older sandbox.db that only has
+    // `datasets`. The dispatcher must be self-sufficient, not depend on a job
+    // having run first. CREATE TABLE IF NOT EXISTS is a no-op if it exists.
+    if let Err(e) = db.execute_batch(
+        "CREATE TABLE IF NOT EXISTS broadcast_outbox (
+            broadcast_id    TEXT PRIMARY KEY,
+            dataset_id      TEXT NOT NULL,
+            target_url      TEXT NOT NULL,
+            envelope_json   TEXT NOT NULL,
+            state           TEXT NOT NULL,
+            attempts        INTEGER NOT NULL DEFAULT 0,
+            next_attempt_at TEXT NOT NULL,
+            last_error      TEXT,
+            created_at      TEXT NOT NULL,
+            updated_at      TEXT NOT NULL
+         );"
+    ) {
+        eprintln!("[outbox] ensure table failed: {e}");
+        return;
+    }
     let now = Utc::now().to_rfc3339();
     // Claim up to 16 rows whose next attempt is due.
     let rows: Vec<(String, String)> = match db.prepare(
