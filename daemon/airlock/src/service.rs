@@ -603,23 +603,39 @@ fn deliver_one(agent: &ureq::Agent, envelope_json: &str) -> DeliveryOutcome {
     let url = format!("{main_url}/ui/api/daemon/broadcast");
     let resp = agent.post(&url).set("Content-Type", "application/json").send_string(envelope_json);
     match resp {
-        Ok(r) => {
+        Ok(r) => classify_response_body(&r.into_string().unwrap_or_default()),
+        // A non-2xx still carries a BroadcastResponse body: the refresh-daemon
+        // returns terminal rejections (bad_signature, schema_mismatch,
+        // out_of_window, content_hash_mismatch) as 401/422. We MUST parse it —
+        // otherwise a permanently-bad broadcast retries forever. Only bodies we
+        // can't classify (bare 5xx, HTML 404) stay retryable.
+        Err(ureq::Error::Status(code, r)) => {
             let body = r.into_string().unwrap_or_default();
-            // Parse BroadcastResponse {schemaVersion, broadcastId, decision, reason}
-            let v: serde_json::Value = match serde_json::from_str(&body) {
-                Ok(v) => v,
-                Err(e) => return DeliveryOutcome::Retryable(format!("unparseable response: {e}")),
-            };
-            let decision = v.get("decision").and_then(|d| d.as_str()).unwrap_or("");
-            let reason = v.get("reason").and_then(|r| r.as_str()).map(String::from);
-            match classify_decision(decision, reason.as_deref()) {
-                "accepted" => DeliveryOutcome::Accepted,
-                "rejected_terminal" => DeliveryOutcome::RejectedTerminal(reason.unwrap_or_default()),
-                _ => DeliveryOutcome::Retryable(reason.unwrap_or_else(|| format!("decision={decision}")).into()),
+            if serde_json::from_str::<serde_json::Value>(&body).is_ok() {
+                classify_response_body(&body)
+            } else {
+                DeliveryOutcome::Retryable(format!("HTTP {code}"))
             }
         }
-        Err(ureq::Error::Status(_code, _)) => DeliveryOutcome::Retryable(format!("HTTP non-2xx")),
         Err(e) => DeliveryOutcome::Retryable(format!("transport: {e}")),
+    }
+}
+
+/// Parse a `BroadcastResponse` body and map its decision to a delivery outcome.
+/// Shared by the 2xx and non-2xx paths so a terminal reject is honored no
+/// matter which HTTP status the target chose to carry it on.
+fn classify_response_body(body: &str) -> DeliveryOutcome {
+    // BroadcastResponse {schemaVersion, broadcastId, decision, reason}
+    let v: serde_json::Value = match serde_json::from_str(body) {
+        Ok(v) => v,
+        Err(e) => return DeliveryOutcome::Retryable(format!("unparseable response: {e}")),
+    };
+    let decision = v.get("decision").and_then(|d| d.as_str()).unwrap_or("");
+    let reason = v.get("reason").and_then(|r| r.as_str()).map(String::from);
+    match classify_decision(decision, reason.as_deref()) {
+        "accepted" => DeliveryOutcome::Accepted,
+        "rejected_terminal" => DeliveryOutcome::RejectedTerminal(reason.unwrap_or_default()),
+        _ => DeliveryOutcome::Retryable(reason.unwrap_or_else(|| format!("decision={decision}"))),
     }
 }
 

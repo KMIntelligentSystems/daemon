@@ -507,7 +507,7 @@ impl Tools {
         }
     }
 
-    // -- store_dataset -------------------------------------------------------
+    // -- store_dataset -------------------------------------------------------,
 
     fn tool_store_dataset(&self, call: &ToolCall, session: &mut Session) -> ToolResult {
         let args: StoreDatasetArgs = match serde_json::from_value(call.args.clone()) {

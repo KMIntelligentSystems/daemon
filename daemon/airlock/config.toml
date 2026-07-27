@@ -220,6 +220,17 @@ api_key_env = "BLS_API_KEY"
 default_series = []
 
 [[series]]
+id = "bls_ces_mfg_employment"
+source = "bls"
+provider_series_id = "CES3000000001"
+unit = "Thousands of Persons"
+seasonal_adjustment = "seasonally_adjusted"
+lead_time_months = 1.0
+reference_lag_months = 1
+min_value = 10000.0
+max_value = 17000.0
+
+[[series]]
 id = "bls_ces_mfg_hours"
 source = "bls"
 provider_series_id = "CES3000000007"
