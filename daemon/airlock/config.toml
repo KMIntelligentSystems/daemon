@@ -106,8 +106,13 @@ unit = "Index"
 seasonal_adjustment = "seasonally_adjusted"
 lead_time_months = 0.0
 reference_lag_months = 1
-min_value = -10.0
-max_value = 10.0
+# CFNAI is a standardized activity index that swings hard in crises: it hit
+# -18.32 in Apr-2020 and +6.32 in Jun-2020. The old [-10, 10] bound rejected the
+# legitimate COVID trough, abstaining otherwise-valid fetches. Widened to cover
+# the true historical range with margin (data-sanity guard, not a plausible-month
+# bound). Normal months sit within ~[-4, +2].
+min_value = -25.0
+max_value = 15.0
 
 # --- Phase 2 — Regional Fed manufacturing surveys (lag-0, current-month) ---
 
