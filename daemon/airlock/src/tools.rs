@@ -250,7 +250,7 @@ impl Tools {
         )
     }
 
-    // -- Census M3 EITS fetch (GET with category_code, data_type_code, seasonal_adj)
+    // -- Census M3 EITS fetch (GET with geography, category, data type, adjustment, time)
 
     fn fetch_census(
         &self,
@@ -275,86 +275,117 @@ impl Tools {
         }
         let category_code = parts[0];
         let data_type_code = parts[1];
-        let seasonal_adj = parts[2];
-
-        // Derive years to request: from (reference_month year - 5) through reference_month year.
-        let ref_year: i32 = self.reference_month[..4].parse().unwrap_or(2026);
-        let years: Vec<String> = ((ref_year - 5)..=ref_year).map(|y| y.to_string()).collect();
-
-        let mut req = self
-            .http
-            .get(&source.base_url)
-            .query("get", "cell_value,time_slot_id")
-            .query("category_code", category_code)
-            .query("data_type_code", data_type_code)
-            .query("seasonal_adj", seasonal_adj)
-            .query("key", api_key);
-        for y in &years {
-            req = req.query("YEAR", y.as_str());
-        }
-
-        let raw = match req.call() {
-            Ok(resp) => match resp.into_string() {
-                Ok(s) => s,
-                Err(e) => return ToolResult::err(&call.call_id, "fetch_failed", e.to_string()),
-            },
-            Err(e) => return ToolResult::err(&call.call_id, "fetch_failed", e.to_string()),
-        };
-        let source_hash = sha256_hex(raw.as_bytes());
-
-        // Census returns a 2D JSON array: [[headers], [row0], [row1], ...]
-        let rows: Vec<Vec<serde_json::Value>> = match serde_json::from_str(&raw) {
-            Ok(v) => v,
-            Err(e) => {
-                return ToolResult::err(&call.call_id, "fetch_failed", format!("parse: {e}"));
-            }
-        };
-        if rows.is_empty() {
-            return ToolResult::err(&call.call_id, "fetch_failed", "empty census response");
-        }
-        let headers = &rows[0];
-        let col_cell_value = headers.iter().position(|h| h.as_str() == Some("cell_value"));
-        let col_time = headers.iter().position(|h| h.as_str() == Some("time_slot_id"));
-        let (Some(ci), Some(ti)) = (col_cell_value, col_time) else {
-            return ToolResult::err(
-                &call.call_id,
-                "fetch_failed",
-                "missing expected columns (cell_value, time_slot_id) in census response",
-            );
-        };
-
-        let mut observations = Vec::new();
-        for row in rows.iter().skip(1) {
-            let date = match row.get(ti).and_then(|v| v.as_str()) {
-                Some(s) => s.to_string(),
-                None => continue,
-            };
-            let val: f64 = match row.get(ci).and_then(|v| v.as_f64()) {
-                Some(v) => v,
-                None => match row.get(ci).and_then(|v| v.as_str()) {
-                    Some(s) => match s.parse() {
-                        Ok(v) => v,
-                        Err(_) => continue,
-                    },
-                    None => continue,
-                },
-            };
-            if val < series.min_value || val > series.max_value {
+        // The provider id uses the project's compact SA/NSA notation, while the
+        // Census M3 API predicate is named `seasonally_adj` and accepts yes/no.
+        let seasonally_adj = match parts[2] {
+            "NSA" => "no",
+            "SA" => "yes",
+            other => {
                 return ToolResult::err(
                     &call.call_id,
-                    "range_check_failed",
-                    format!("{} value {} out of [{}, {}]", args.series_id, val, series.min_value, series.max_value),
-                );
+                    "fetch_failed",
+                    format!("invalid census adjustment {other} (expected SA or NSA)"),
+                )
             }
-            observations.push(Observation { date, value: val, is_preliminary: None });
+        };
+
+        // The release-stage ADL needs monthly levels far enough back to form
+        // YoY growth plus g(t-1..t-3). Retain 16 months: for a window ending at
+        // t this covers S_t through S_(t-15). Three calendar-year requests are
+        // necessary when t falls in January-March. Fetch each year separately:
+        // the API becomes unreliable (HTTP 500) with >2 repeated `time`
+        // predicates in one request.
+        const ADL_LEVEL_WINDOW_MONTHS: usize = 16;
+        let ref_year: i32 = self.reference_month[..4].parse().unwrap_or(2026);
+        let years: Vec<String> = ((ref_year - 2)..=ref_year).map(|y| y.to_string()).collect();
+
+        let mut raw_responses = Vec::with_capacity(years.len());
+        let mut observations = Vec::new();
+        for year in &years {
+            let req = self
+                .http
+                .get(&source.base_url)
+                .query("get", "cell_value,time_slot_id")
+                // Census requires an explicit geography predicate even for this
+                // national-only dataset. `time` is returned automatically because
+                // it is used as a predicate; `time_slot_id` is always "0" here and
+                // must not be interpreted as the observation month.
+                .query("for", "us:*")
+                .query("category_code", category_code)
+                .query("data_type_code", data_type_code)
+                .query("seasonally_adj", seasonally_adj)
+                .query("key", api_key)
+                .query("time", year);
+
+            let raw = match req.call() {
+                Ok(resp) => match resp.into_string() {
+                    Ok(s) => s,
+                    Err(e) => return ToolResult::err(&call.call_id, "fetch_failed", e.to_string()),
+                },
+                Err(e) => return ToolResult::err(&call.call_id, "fetch_failed", e.to_string()),
+            };
+
+            // Census returns a 2D JSON array: [[headers], [row0], [row1], ...]
+            let rows: Vec<Vec<serde_json::Value>> = match serde_json::from_str(&raw) {
+                Ok(v) => v,
+                Err(e) => {
+                    return ToolResult::err(&call.call_id, "fetch_failed", format!("parse: {e}"));
+                }
+            };
+            if rows.is_empty() {
+                return ToolResult::err(&call.call_id, "fetch_failed", "empty census response");
+            }
+            let headers = &rows[0];
+            let col_cell_value = headers.iter().position(|h| h.as_str() == Some("cell_value"));
+            let col_time = headers.iter().position(|h| h.as_str() == Some("time"));
+            let (Some(ci), Some(ti)) = (col_cell_value, col_time) else {
+                return ToolResult::err(
+                    &call.call_id,
+                    "fetch_failed",
+                    "missing expected columns (cell_value, time) in census response",
+                );
+            };
+
+            for row in rows.iter().skip(1) {
+                let date = match row.get(ti).and_then(|v| v.as_str()) {
+                    Some(s) => s.to_string(),
+                    None => continue,
+                };
+                let val: f64 = match row.get(ci).and_then(|v| v.as_f64()) {
+                    Some(v) => v,
+                    None => match row.get(ci).and_then(|v| v.as_str()) {
+                        Some(s) => match s.parse() {
+                            Ok(v) => v,
+                            Err(_) => continue,
+                        },
+                        None => continue,
+                    },
+                };
+                if val < series.min_value || val > series.max_value {
+                    return ToolResult::err(
+                        &call.call_id,
+                        "range_check_failed",
+                        format!("{} value {} out of [{}, {}]", args.series_id, val, series.min_value, series.max_value),
+                    );
+                }
+                observations.push(Observation { date, value: val, is_preliminary: None });
+            }
+            raw_responses.push(raw);
         }
+        let source_hash = sha256_hex(raw_responses.join("\n").as_bytes());
+
+        // Never include observations after the requested reference month. This
+        // matters when an old month is re-run after newer M3 releases exist:
+        // taking the API's latest rows would leak future values into the ADL
+        // information set and could also push the requested month out of view.
+        observations.retain(|o| o.date.as_str() <= self.reference_month.as_str());
 
         // Sort by date ascending (Census may not guarantee order).
         observations.sort_by(|a, b| a.date.cmp(&b.date));
 
         let n = observations.len();
-        if n > 6 {
-            observations = observations.split_off(n - 6);
+        if n > ADL_LEVEL_WINDOW_MONTHS {
+            observations = observations.split_off(n - ADL_LEVEL_WINDOW_MONTHS);
         }
 
         ToolResult::ok(
