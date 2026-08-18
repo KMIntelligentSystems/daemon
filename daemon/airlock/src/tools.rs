@@ -4,8 +4,9 @@
 
 use anyhow::{Context, Result};
 use chrono::Utc;
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use serde::Deserialize;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use crate::config::{Config, SeriesCfg, Source};
 use crate::crypto::{hmac_sha256_hex, sha256_hex};
@@ -18,6 +19,35 @@ pub struct Tools {
     pub hmac_key: Vec<u8>,
     pub source: String,        // the source this wake handles (from CLI)
     pub reference_month: String,
+    /// Serializes this job against every other DB user in the process (outbox
+    /// dispatcher, /datasets pulls). Declared last so it drops last: the
+    /// connection closes, then the lock releases.
+    pub _db_guard: MutexGuard<'static, ()>,
+}
+
+/// Process-global serializer for all sandbox.db access.
+///
+/// Why: on Azure Files (CIFS mount in ACA) SQLite's POSIX byte-range lock
+/// protocol does not work — every writer gets permanent SQLITE_BUSY, even on
+/// a brand-new file with zero open handles (verified 2026-08-18). So every
+/// connection is opened with nolock=1 and all DB access is serialized here.
+/// Only one connection is active at a time, which also keeps page caches
+/// coherent. Safe because the deployment guarantees a single replica
+/// (maxReplicas=1) and ACA Jobs never mount /data.
+pub static DB_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+pub fn db_lock() -> MutexGuard<'static, ()> {
+    DB_LOCK.get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) // a panicked job must not wedge the daemon
+}
+
+/// Open sandbox.db with SQLite's file-locking protocol disabled (see DB_LOCK).
+pub fn open_db(db_path: &str) -> rusqlite::Result<Connection> {
+    Connection::open_with_flags(
+        format!("file:{db_path}?nolock=1"),
+        OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_CREATE | OpenFlags::SQLITE_OPEN_URI,
+    )
 }
 
 /// What survives across tool calls within one session.
@@ -51,7 +81,8 @@ struct FredObs {
 
 impl Tools {
     pub fn open(config: Config, db_path: &str, hmac_key: Vec<u8>, source: String, reference_month: String) -> Result<Self> {
-        let db = Connection::open(db_path).with_context(|| format!("opening db {db_path}"))?;
+        let guard = db_lock();
+        let db = open_db(db_path).with_context(|| format!("opening db {db_path}"))?;
         db.execute_batch(
             "CREATE TABLE IF NOT EXISTS datasets (
                 dataset_id     TEXT PRIMARY KEY,
@@ -78,7 +109,7 @@ impl Tools {
         let http = ureq::AgentBuilder::new()
             .timeout(std::time::Duration::from_secs(30))
             .build();
-        Ok(Tools { config, db, http, hmac_key, source, reference_month })
+        Ok(Tools { config, db, http, hmac_key, source, reference_month, _db_guard: guard })
     }
 
     /// Single routing point for the tool loop. Returns a ToolResult always

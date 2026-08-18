@@ -21,7 +21,6 @@ use crate::config::{Config, ScheduleEntry};
 use crate::crypto::{hmac_sha256_hex, hmac_sha256_verify};
 use crate::grammar::*;
 use crate::tools::{Session, Tools};
-use rusqlite::Connection;
 
 const KNOWN_TARGETS: &[&str] = &["m3_new_orders", "m3_unfilled_orders", "m3_shipments", "mfg_capacity"];
 
@@ -361,7 +360,9 @@ fn handle_pull(db_path: &str, hmac_key: &[u8], dataset_id: &str, request: &tiny_
     if !check_pull_auth(hmac_key, dataset_id, request) {
         return json_err(401, "invalid or missing X-Daemon-Sig header");
     }
-    let db = match Connection::open(db_path) {
+    // See tools::DB_LOCK — SQLite locking is disabled; access is serialized in-process.
+    let _guard = crate::tools::db_lock();
+    let db = match crate::tools::open_db(db_path) {
         Ok(d) => d,
         Err(e) => return json_err(500, format!("db open: {e}")),
     };
@@ -524,7 +525,11 @@ fn outbox_dispatcher_loop(db_path: String) {
 }
 
 fn drain_outbox_once(db_path: &str, agent: &ureq::Agent) {
-    let db = match Connection::open(db_path) {
+    // Serialized against jobs and /datasets pulls (see tools::DB_LOCK). The
+    // guard is held across deliver_one's HTTP POST; the ureq agent has a 30 s
+    // timeout, so the worst-case hold is bounded.
+    let _guard = crate::tools::db_lock();
+    let db = match crate::tools::open_db(db_path) {
         Ok(d) => d,
         Err(e) => { eprintln!("[outbox] db open: {e}"); return; }
     };

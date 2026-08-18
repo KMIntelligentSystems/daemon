@@ -1,0 +1,9 @@
+# Build context hygiene — keep the multi-GB Rust target dir and node_modules out.
+**/target
+**/node_modules
+**/.env
+**/*.bak
+daemon/airlock/logs
+daemon/airlock/sandbox.db
+daemon/data
+.git
