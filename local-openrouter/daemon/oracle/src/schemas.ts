@@ -40,44 +40,68 @@ CRITICAL RULES:
 /** Hard ceiling on cumulative tokens before we refuse the next call. */
 export const TOKEN_CEILING = 100_000;
 
-/** Approximate cost per 1K tokens for gpt-4.1-mini on Azure (input, $0.40/1M). */
-export const COST_PER_1K_INPUT = 0.0004;
-/** Approximate cost per 1K tokens for gpt-4.1-mini on Azure (output, $1.60/1M). */
-export const COST_PER_1K_OUTPUT = 0.0016;
+/** Approximate cost per 1K tokens for gpt-4o-mini (input). */
+export const COST_PER_1K_INPUT = 0.00015;
+/** Approximate cost per 1K tokens for gpt-4o-mini (output). */
+export const COST_PER_1K_OUTPUT = 0.0006;
 /** Hard dollar ceiling per invocation. */
 export const COST_CEILING_DOLLARS = 0.05;
 
-// ─── Foundry Responses API types ──────────────────────────────────────
-// Wire mapping from the old chat/completions shape (design §3.1):
-//   messages[]            -> input[] (model output items echoed back verbatim)
-//   system message        -> `instructions` request param
-//   tools[].function.*    -> flat tools[] entries with strict:true
-//   choice.message        -> output[] items
-//     .tool_calls[]       ->   items of type "function_call" {call_id, name, arguments}
-//   {role:"tool",...}    -> {type:"function_call_output", call_id, output}
-//   usage.prompt_tokens   -> usage.input_tokens  (completion -> output)
+// ─── OpenRouter API types ──────────────────────────────────────────────
 
-/** A tool definition in Responses API format (flat, strict). */
-export interface ResponsesTool {
+// ─── OpenRouter API types ──────────────────────────────────────────────
+
+/** A tool definition in OpenAI/OpenRouter function-calling format. */
+export interface OpenRouterTool {
   type: "function";
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>;
-  strict: boolean;
+  function: {
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+  };
 }
 
-/** Input items we append while looping: user nudges and tool outputs.
- *  (Model output items are echoed back too, but we keep those as unknown.) */
-export type ResponsesInputItem =
-  | { role: "user"; content: string }
-  | { type: "function_call_output"; call_id: string; output: string };
+/** One message in the chat completion array. */
+export interface OpenRouterMessage {
+  role: "system" | "user" | "assistant" | "tool";
+  content: string | null;
+  tool_calls?: OpenRouterToolCall[];
+  tool_call_id?: string;
+}
 
-/** A function_call item in the response's output array. */
-export interface ResponsesFunctionCall {
-  type: "function_call";
-  call_id: string;
-  name: string;
-  arguments: string; // JSON-encoded string
+/** A tool call the model emits in its response. */
+export interface OpenRouterToolCall {
+  id: string;
+  type: "function";
+  function: {
+    name: string;
+    arguments: string; // JSON-encoded string
+  };
+}
+
+/** The choice object in a chat completion response. */
+export interface OpenRouterChoice {
+  index: number;
+  message: {
+    role: "assistant";
+    content: string | null;
+    tool_calls?: OpenRouterToolCall[];
+  };
+  finish_reason: "stop" | "tool_calls" | "length" | null;
+}
+
+/** Usage stats returned by OpenRouter. */
+export interface OpenRouterUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+}
+
+/** Full OpenRouter chat completion response. */
+export interface OpenRouterResponse {
+  id: string;
+  choices: OpenRouterChoice[];
+  usage?: OpenRouterUsage;
 }
 
 // ─── Shared enums (mirror indicator-dataset.schema.json $defs) ──────────
@@ -201,7 +225,7 @@ export const TaskContextSchema = z.object({
   source: z.enum(SOURCES),
   referenceMonth: z.string().regex(/^\d{4}-(0[1-9]|1[0-2])$/),
   goal: z.string().max(1000),
-  model: z.string().max(128).describe("Foundry deployment name, e.g. 'gpt-4.1-mini'"),
+  model: z.string().max(128).describe("OpenRouter model id, e.g. 'openai/gpt-4o-mini'"),
   series: z.array(z.string()).min(1).max(64).describe("Series IDs the oracle is allowed to fetch"),
   budget: z.object({
     maxToolCalls: z.number().int().min(1).max(200),
@@ -210,128 +234,127 @@ export const TaskContextSchema = z.object({
 });
 export type TaskContext = z.infer<typeof TaskContextSchema>;
 
-// ─── Responses API tool definitions (contents mirror the Zod schemas) ──
+// ─── OpenRouter tool definitions (generated from Zod schemas) ──────────
 
-export function buildToolCatalog(allowedSeries: readonly string[]): ResponsesTool[] {
-  // strict:true constraints (Responses API): every property must be listed in
-  // 'required' (optional args become nullable), additionalProperties:false on
-  // every object, recursively — so the indicator/observation item schemas are
-  // spelled out rather than left as open objects.
+/** Derive a stripped JSON Schema from a Zod object schema for OpenRouter. */
+function toOpenRouterParams(schema: z.ZodObject<z.ZodRawShape>): Record<string, unknown> {
+  // zod-to-json-schema would be cleaner, but we avoid the dependency.
+  // The airlock's Rust validation is the real gate; these are hints for the LLM.
+  const def = (schema as unknown as { description?: string }).description;
+  return {
+    type: "object",
+    properties: {}, // minimal — the LLM infers args from descriptions
+    ...(def ? { description: def } : {}),
+  };
+}
+
+export function buildToolCatalog(allowedSeries: readonly string[]): OpenRouterTool[] {
   return [
     {
-      type: 'function',
-      strict: true,
-      name: 'fetch_series',
-      description:
-        'Fetch a series from its source API (FRED, BLS, or Census). ' +
-        `Allowed seriesId values: ${allowedSeries.join(', ')}.`,
-      parameters: {
-        type: 'object',
-        properties: {
-          seriesId: {
-            type: 'string',
-            enum: [...allowedSeries],
-            description: `One of: ${allowedSeries.join(', ')}.`,
-          },
-          start: { type: ['string', 'null'], description: 'Start date YYYY-MM-DD, or null to omit (a wide range is recommended).' },
-          end: { type: ['string', 'null'], description: 'End date YYYY-MM-DD, or null to omit.' },
-          vintage: {
-            type: ['string', 'null'],
-            enum: ['latest', 'first_release', null],
-            description: 'Which data vintage to request, or null for latest.',
-          },
-        },
-        required: ['seriesId', 'start', 'end', 'vintage'],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: 'function',
-      strict: true,
-      name: 'read_prior_vintage',
-      description: 'Read the last values stored for a series/month to detect revisions.',
-      parameters: {
-        type: 'object',
-        properties: {
-          seriesId: { type: 'string', description: 'Series identifier.' },
-          referenceMonth: { type: 'string', description: 'Reference month YYYY-MM.' },
-        },
-        required: ['seriesId', 'referenceMonth'],
-        additionalProperties: false,
-      },
-    },
-    {
-      type: 'function',
-      strict: true,
-      name: 'store_dataset',
-      description:
-        'Store a validated dataset of indicators for the current reference month. ' +
-        'Call this AFTER fetching and shaping observations.',
-      parameters: {
-        type: 'object',
-        properties: {
-          target: {
-            type: 'string',
-            enum: ['m3_new_orders', 'm3_unfilled_orders'],
-            description: 'Which forecast target this dataset feeds.',
-          },
-          referenceMonth: { type: 'string', description: 'Reference month YYYY-MM.' },
-          releaseDate: { type: 'string', description: "Source's official release date YYYY-MM-DD." },
-          indicators: {
-            type: 'array',
-            description: 'Array of indicator objects with seriesId, leadTimeMonths, unit, seasonalAdjustment, and observations.',
-            items: {
-              type: 'object',
-              properties: {
-                seriesId: { type: 'string' },
-                leadTimeMonths: { type: 'number', description: 'Approximate lead over target in months (0-12).' },
-                unit: { type: ['string', 'null'], description: "Reported unit, e.g. 'Percent', 'Millions of Dollars', or null." },
-                seasonalAdjustment: {
-                  type: ['string', 'null'],
-                  enum: ['seasonally_adjusted', 'not_seasonally_adjusted', 'unknown', null],
-                },
-                observations: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    properties: {
-                      date: { type: 'string', description: 'Observation date, YYYY-MM or YYYY-MM-DD.' },
-                      value: { type: 'number' },
-                      isPreliminary: { type: ['boolean', 'null'], description: 'True for advance/flash vintages, else null.' },
-                    },
-                    required: ['date', 'value', 'isPreliminary'],
-                    additionalProperties: false,
-                  },
-                },
-              },
-              required: ['seriesId', 'leadTimeMonths', 'unit', 'seasonalAdjustment', 'observations'],
-              additionalProperties: false,
+      type: "function",
+      function: {
+        name: "fetch_series",
+        description:
+          "Fetch a series from its source API (FRED, BLS, or Census). " +
+          `Allowed seriesId values: ${allowedSeries.join(", ")}.`,
+        parameters: {
+          type: "object",
+          properties: {
+            seriesId: {
+              type: "string",
+              enum: [...allowedSeries],
+              description: `One of: ${allowedSeries.join(", ")}.`,
+            },
+            start: { type: "string", description: "Start date YYYY-MM-DD (optional). Omit or use a wide range to get recent observations." },
+            end: { type: "string", description: "End date YYYY-MM-DD (optional)." },
+            vintage: {
+              type: "string",
+              enum: ["latest", "first_release"],
+              description: "Which data vintage to request (optional, defaults to latest).",
             },
           },
+          required: ["seriesId"],
+          additionalProperties: false,
         },
-        required: ['target', 'referenceMonth', 'releaseDate', 'indicators'],
-        additionalProperties: false,
       },
     },
     {
-      type: 'function',
-      strict: true,
-      name: 'finish',
-      description:
-        'End the tool loop. Call with status stored after a successful ' +
-        'store_dataset, or abstain if data is unavailable or incomplete.',
-      parameters: {
-        type: 'object',
-        properties: {
-          status: {
-            type: 'string',
-            enum: ['stored', 'abstain'],
-            description: "'stored' if dataset was stored, 'abstain' if skipping.",
+      type: "function",
+      function: {
+        name: "read_prior_vintage",
+        description:
+          "Read the last values stored for a series/month to detect revisions.",
+        parameters: {
+          type: "object",
+          properties: {
+            seriesId: { type: "string", description: "Series identifier." },
+            referenceMonth: {
+              type: "string",
+              description: "Reference month YYYY-MM.",
+            },
           },
-          note: { type: ['string', 'null'], description: 'Optional note explaining the decision (max 400 chars), or null.' },
+          required: ["seriesId", "referenceMonth"],
+          additionalProperties: false,
         },
-        required: ['status', 'note'],
-        additionalProperties: false,
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "store_dataset",
+        description:
+          "Store a validated dataset of indicators for the current reference month. " +
+          "Call this AFTER fetching and shaping observations.",
+        parameters: {
+          type: "object",
+          properties: {
+            target: {
+              type: "string",
+              enum: ["m3_new_orders", "m3_unfilled_orders"],
+              description: "Which forecast target this dataset feeds.",
+            },
+            referenceMonth: {
+              type: "string",
+              description: "Reference month YYYY-MM.",
+            },
+            releaseDate: {
+              type: "string",
+              description: "Source's official release date YYYY-MM-DD.",
+            },
+            indicators: {
+              type: "array",
+              description: "Array of indicator objects with seriesId, leadTimeMonths, unit, seasonalAdjustment, and observations.",
+              items: { type: "object" },
+            },
+          },
+          required: ["target", "referenceMonth", "releaseDate", "indicators"],
+          additionalProperties: false,
+        },
+      },
+    },
+    {
+      type: "function",
+      function: {
+        name: "finish",
+        description:
+          "End the tool loop.  Call with status 'stored' after a successful " +
+          "store_dataset, or 'abstain' if data is unavailable or incomplete.",
+        parameters: {
+          type: "object",
+          properties: {
+            status: {
+              type: "string",
+              enum: ["stored", "abstain"],
+              description: "'stored' if dataset was stored, 'abstain' if skipping.",
+            },
+            note: {
+              type: "string",
+              description: "Optional note explaining the decision (max 400 chars).",
+            },
+          },
+          required: ["status"],
+          additionalProperties: false,
+        },
       },
     },
   ];

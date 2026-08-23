@@ -9,13 +9,11 @@
 max_tool_calls = 20
 wall_clock_secs = 60
 
-# Foundry deployment-name allowlist (design §3.3). A RunRequest's `model`, if
-# present, must be one of these; otherwise `default` is used. These are
-# DEPLOYMENT names in the Foundry project (Models + endpoints), not model ids.
-# The cost ceiling stays in Rust (oracle/src/schemas.ts carries Azure prices).
+# OpenRouter model allowlist (v6). A RunRequest's `model`, if present, must be
+# one of these; otherwise `default` is used. The cost ceiling stays in Rust.
 [models]
-allowlist = ["gpt-4.1-mini"]
-default = "gpt-4.1-mini"
+allowlist = ["openai/gpt-4o-mini", "anthropic/claude-3.5-haiku", "google/gemini-2.0-flash-001"]
+default = "openai/gpt-4o-mini"
 
 [hosts]
 # Any fetch to a host outside this list is refused (host_not_allowed).

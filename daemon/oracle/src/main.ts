@@ -1,15 +1,16 @@
 /**
- * daemon-oracle — untrusted agent (Phase 3: real LLM over OpenRouter).
+ * daemon-oracle — untrusted agent (Phase 3: real LLM via Foundry Responses API).
  *
  * Spawned by the airlock:
  *   node dist/main.js '<task-context-json>'
  *
- * TaskContext is the single positional argument.  The oracle calls
- * OpenRouter with the tool catalog, drives the tool-calling loop
+ * TaskContext is the single positional argument.  The oracle calls the
+ * Foundry Responses API with the tool catalog, drives the tool-calling loop
  * over stdin/stdout, and exits after finish or budget exhaustion.
  *
- * Environment:
- *   OPENROUTER_API_KEY — required, loaded from process.env
+ * Environment (injected by the airlock's lockdown; nothing else survives):
+ *   FOUNDRY_ACCESS_TOKEN      — short-lived Entra bearer, minted by the airlock
+ *   AZURE_AI_PROJECT_ENDPOINT — Foundry project endpoint
  */
 
 import { createStdioBridge } from "./bridge.js";
@@ -32,9 +33,10 @@ async function main(): Promise<void> {
     process.exit(2);
   }
 
-  const apiKey = process.env["OPENROUTER_API_KEY"];
-  if (!apiKey) {
-    console.error("[oracle] FATAL: OPENROUTER_API_KEY not set");
+  const token = process.env["FOUNDRY_ACCESS_TOKEN"];
+  const endpoint = process.env["AZURE_AI_PROJECT_ENDPOINT"];
+  if (!token || !endpoint) {
+    console.error("[oracle] FATAL: FOUNDRY_ACCESS_TOKEN / AZURE_AI_PROJECT_ENDPOINT not set");
     process.exit(2);
   }
 
@@ -45,12 +47,11 @@ async function main(): Promise<void> {
   );
 
   const bridge = createStdioBridge();
-  const outcome = await runLLMLoop(bridge, ctx, apiKey);
+  const outcome = await runLLMLoop(bridge, ctx, token, endpoint);
 
   console.error(
-    "[oracle] done: status=%s reason=%s iters=%d tokens(in=%d out=%d) cost=$%.5f",
-    outcome.status, outcome.reason, outcome.iterations,
-    outcome.inputTokens, outcome.outputTokens, outcome.costDollars,
+    `[oracle] done: status=${outcome.status} reason=${outcome.reason} iters=${outcome.iterations} ` +
+    `tokens(in=${outcome.inputTokens} out=${outcome.outputTokens}) cost=$${outcome.costDollars.toFixed(5)}`,
   );
 
   process.exit(outcome.status === "error" ? 1 : 0);

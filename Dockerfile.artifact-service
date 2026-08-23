@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1
+# Artifact Service — user-scoped artifact catalog (save/list/delete).
+# Build context: c:/repos/daemon
+#   az acr build -r daemonairlock -t artifact-service:0.1.0 -f Dockerfile.artifact-service .
+
+FROM node:24-bookworm-slim AS build
+WORKDIR /src
+COPY daemon/artifact-service/package*.json ./
+RUN npm ci
+COPY daemon/artifact-service/tsconfig.json ./
+COPY daemon/artifact-service/src ./src
+RUN npx tsc
+
+FROM node:24-bookworm-slim
+WORKDIR /app
+COPY --from=build /src/dist ./dist
+COPY --from=build /src/node_modules ./node_modules
+ENV PORT=8793 ARTIFACT_DB_PATH=/data/artifacts.db
+EXPOSE 8793
+CMD ["node", "dist/server.js"]

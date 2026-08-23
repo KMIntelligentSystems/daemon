@@ -1,15 +1,25 @@
 /**
- * OpenRouter LLM client — sends the tool catalog to the model and drives
- * the tool-calling loop until `finish` or budget exhaustion.
+ * Foundry Responses API client — sends the tool catalog to the model and
+ * drives the tool-calling loop until `finish` or budget exhaustion.
  *
  * Dependencies: native `fetch` only.  No vendor SDK.
+ *
+ * Wire mapping from the old chat/completions shape (design §3.1):
+ *   messages[]             -> input[] (model output items echoed back verbatim)
+ *   system message         -> `instructions` request param
+ *   choice.tool_calls[]    -> output[] items {type:"function_call", call_id, name, arguments}
+ *   {role:"tool", ...}     -> {type:"function_call_output", call_id, output}
+ *   usage.prompt_tokens    -> usage.input_tokens  (completion_tokens -> output_tokens)
+ *
+ * Auth: the airlock hands the oracle a short-lived Entra bearer as
+ * FOUNDRY_ACCESS_TOKEN (+ AZURE_AI_PROJECT_ENDPOINT).  The oracle cannot
+ * mint tokens; the credential dies with the job (design §3.2).
  */
 
 import type { Bridge } from "./bridge.js";
 import {
-  type OpenRouterMessage,
-  type OpenRouterToolCall,
-  type OpenRouterTool,
+  type ResponsesFunctionCall,
+  type ResponsesTool,
   type TaskContext,
   type ToolCall,
   SYSTEM_PROMPT,
@@ -64,83 +74,80 @@ function budgetExceeded(b: Budget): string | null {
   return null;
 }
 
-// ─── OpenRouter API call ───────────────────────────────────────────────
+// ─── Foundry Responses API call ─────────────────────────────────────────
 
-const OR_BASE = "https://openrouter.ai/api/v1/chat/completions";
+interface ResponsesResult {
+  output: unknown[];
+  usage: { input_tokens: number; output_tokens: number };
+}
 
-async function chatCompletion(
-  apiKey: string,
+async function callResponses(
+  token: string,
+  endpoint: string,
   model: string,
-  messages: OpenRouterMessage[],
-  tools: OpenRouterTool[],
-): Promise<{ message: OpenRouterMessage; usage: { prompt_tokens: number; completion_tokens: number } }> {
+  input: unknown[],
+  tools: ResponsesTool[],
+): Promise<ResponsesResult> {
   const body = JSON.stringify({
     model,
-    messages,
+    instructions: SYSTEM_PROMPT, // was messages[0] {role:"system"}
+    input,
     tools,
     tool_choice: "auto",
     temperature: 0, // deterministic for data-fetching
+    // Must fit a full store_dataset payload (indicators x observations inline
+    // in the arguments JSON); 800 truncated it mid-string and JSON.parse fell
+    // back to {} — the airlock then (correctly) rejected missing args.
+    max_output_tokens: 8192,
+    store: false, // no server-side state: each call is a pure function of input[]
   });
 
-  const res = await fetch(OR_BASE, {
+  const res = await fetch(`${endpoint}/openai/v1/responses`, {
     method: "POST",
     headers: {
-      "Authorization": `Bearer ${apiKey}`,
+      "Authorization": `Bearer ${token}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": "https://daemon.local",
-      "X-Title": "daemon-oracle",
     },
     body,
   });
 
   if (!res.ok) {
     const text = await res.text().catch(() => "(no body)");
-    throw new Error(`OpenRouter HTTP ${res.status}: ${text.slice(0, 400)}`);
+    throw new Error(`Foundry Responses HTTP ${res.status}: ${text.slice(0, 400)}`);
   }
 
   const data = await res.json();
-  const choice = data?.choices?.[0];
-  if (!choice) throw new Error("OpenRouter returned no choices");
-
   return {
-    message: {
-      role: "assistant",
-      content: choice.message?.content ?? null,
-      tool_calls: choice.message?.tool_calls,
-    },
+    output: data.output ?? [],
     usage: {
-      prompt_tokens: data.usage?.prompt_tokens ?? 0,
-      completion_tokens: data.usage?.completion_tokens ?? 0,
+      input_tokens: data.usage?.input_tokens ?? 0,
+      output_tokens: data.usage?.output_tokens ?? 0,
     },
   };
 }
 
-// ─── Message builder ────────────────────────────────────────────────────
+// ─── First user message ─────────────────────────────────────────────────
 
-function userMessage(ctx: TaskContext): OpenRouterMessage {
-  return {
-    role: "user",
-    content: `Task: ${ctx.goal}\nSource: ${ctx.source}\nReference month: ${ctx.referenceMonth}\n\nFetch the required data, store it, then call finish.`,
-  };
-}
-
-function systemMessage(): OpenRouterMessage {
-  return { role: "system", content: SYSTEM_PROMPT };
+function userText(ctx: TaskContext): string {
+  return `Task: ${ctx.goal}\nSource: ${ctx.source}\nReference month: ${ctx.referenceMonth}\n\nFetch the required data, store it, then call finish.`;
 }
 
 // ─── Tool call conversion ──────────────────────────────────────────────
 
-function toToolCall(raw: OpenRouterToolCall, idx: number): ToolCall {
+function toToolCall(raw: ResponsesFunctionCall, idx: number): ToolCall {
   let args: unknown;
   try {
-    args = JSON.parse(raw.function.arguments);
+    args = JSON.parse(raw.arguments);
   } catch {
     args = {};
   }
   return {
     schemaVersion: 1,
+    // NB: we generate our own callId — the airlock's grammar requires the
+    // /^call-[A-Za-z0-9_-]{1,64}$/ shape; the model's call_id is only used
+    // for the function_call_output echo, not sent to the airlock.
     callId: `call-llm-${idx}`,
-    tool: raw.function.name as ToolCall["tool"],
+    tool: raw.name as ToolCall["tool"],
     args: args as Record<string, unknown>,
   };
 }
@@ -156,25 +163,39 @@ export interface LLMOutcome {
   costDollars: number;
 }
 
+function outcome(
+  status: LLMOutcome["status"],
+  reason: string,
+  budget: Budget,
+): LLMOutcome {
+  return {
+    status,
+    reason,
+    iterations: budget.iterations,
+    inputTokens: budget.cumulativeInputTokens,
+    outputTokens: budget.cumulativeOutputTokens,
+    costDollars: projectedCost(budget),
+  };
+}
+
 /**
  * Run the LLM tool-calling loop.
  *
- * 1. Send system prompt + user message + tool catalog to OpenRouter.
- * 2. On tool_calls: convert to ToolCall, send over bridge, feed ToolResult
- *    back as a tool-role message.
- * 3. Repeat until model calls finish, or budget is exhausted.
+ * 1. Send instructions + user message + tool catalog to the Responses API.
+ * 2. On function_call items: convert to ToolCall, send over bridge, feed the
+ *    ToolResult back as a function_call_output item (echoing the model's
+ *    output items into input first — that is the Responses idiom).
+ * 3. Repeat until the model calls finish, or the budget is exhausted.
  */
 export async function runLLMLoop(
   bridge: Bridge,
   ctx: TaskContext,
-  apiKey: string,
+  token: string,
+  endpoint: string,
 ): Promise<LLMOutcome> {
   const tools = buildToolCatalog(ctx.series);
   const budget = makeBudget(ctx);
-  const messages: OpenRouterMessage[] = [
-    systemMessage(),
-    userMessage(ctx),
-  ];
+  const input: unknown[] = [{ role: "user", content: userText(ctx) }];
 
   console.error("[oracle] model=%s budget(calls=%d, secs=%d)", ctx.model, budget.maxToolCalls, (budget.wallClockDeadline - Date.now()) / 1000 | 0);
 
@@ -191,96 +212,78 @@ export async function runLLMLoop(
         tool: "finish",
         args: { status: "abstain", note: exceeded.slice(0, 400) },
       });
-      // Read the finish ack so the airlock can proceed.
-      await bridge.recv();
+      await bridge.recv(); // read the finish ack so the airlock can proceed
       bridge.done();
-      return {
-        status: "abstain",
-        reason: exceeded,
-        iterations: budget.iterations,
-        inputTokens: budget.cumulativeInputTokens,
-        outputTokens: budget.cumulativeOutputTokens,
-        costDollars: projectedCost(budget),
-      };
+      return outcome("abstain", exceeded, budget);
     }
 
     // Call the model.
-    console.error("[oracle] → LLM call %d (tokens in=%d out=%d cost=$%.4f)", i + 1, budget.cumulativeInputTokens, budget.cumulativeOutputTokens, projectedCost(budget));
-    const resp = await chatCompletion(apiKey, ctx.model, messages, tools);
-    budget.cumulativeInputTokens += resp.usage.prompt_tokens;
-    budget.cumulativeOutputTokens += resp.usage.completion_tokens;
+    console.error(`[oracle] -> LLM call ${i + 1} (tokens in=${budget.cumulativeInputTokens} out=${budget.cumulativeOutputTokens} cost=$${projectedCost(budget).toFixed(4)})`);
+    const resp = await callResponses(token, endpoint, ctx.model, input, tools);
+    budget.cumulativeInputTokens += resp.usage.input_tokens;
+    budget.cumulativeOutputTokens += resp.usage.output_tokens;
 
-    const choice = resp.message;
-    messages.push(choice);
+    // Responses idiom: echo the model's output items back into input before
+    // appending our function_call_output items.
+    input.push(...resp.output);
 
-    // Model wants to call tools.
-    if (choice.tool_calls && choice.tool_calls.length > 0) {
-      for (let j = 0; j < choice.tool_calls.length; j++) {
-        const raw = choice.tool_calls[j];
-        const call = toToolCall(raw, i * 10 + j);
+    const calls = resp.output.filter(
+      (o): o is ResponsesFunctionCall =>
+        typeof o === "object" && o !== null && (o as { type?: string }).type === "function_call",
+    );
 
-        console.error("[oracle] → tool %s (callId=%s)", call.tool, call.callId);
-
-        // Special: finish is the terminal tool — send it and return.
-        if (call.tool === "finish") {
-          const status = (call.args as Record<string, unknown>)?.status === "stored" ? "stored" : "abstain";
-          bridge.send(call);
-          await bridge.recv(); // ack
-          bridge.done();
-          return {
-            status,
-            reason: (call.args as Record<string, unknown>)?.note as string ?? "LLM called finish",
-            iterations: budget.iterations,
-            inputTokens: budget.cumulativeInputTokens,
-            outputTokens: budget.cumulativeOutputTokens,
-            costDollars: projectedCost(budget),
-          };
-        }
-
-        // Send tool call to airlock, receive result.
-        bridge.send(call);
-        const tr = await bridge.recv();
-
-        if (!tr) {
-          bridge.done();
-          return {
-            status: "error",
-            reason: "airlock closed connection (EOF)",
-            iterations: budget.iterations,
-            inputTokens: budget.cumulativeInputTokens,
-            outputTokens: budget.cumulativeOutputTokens,
-            costDollars: projectedCost(budget),
-          };
-        }
-
-        console.error("[oracle] ← tool %s ok=%s", call.tool, tr.ok);
-
-        // Feed the tool result back to the model.
-        messages.push({
-          role: "tool",
-          tool_call_id: raw.id,
-          content: JSON.stringify(tr),
-        });
+    if (calls.length === 0) {
+      // Model returned text without tool calls — nudge it back to the task.
+      const msg = resp.output.find(
+        (o): o is { type: "message"; content?: { text?: string }[] } =>
+          typeof o === "object" && o !== null && (o as { type?: string }).type === "message",
+      );
+      const text = msg?.content?.map((c) => c?.text ?? "").join("") ?? "";
+      if (text) console.error("[oracle] <- LLM text: %s", text.slice(0, 120));
+      if (resp.output.length === 0) {
+        bridge.done();
+        return outcome("error", "LLM returned empty response (no output items)", budget);
       }
-      continue; // next model call
+      input.push({ role: "user", content: "Continue the task: fetch the required data, store it with store_dataset, then call finish." });
+      continue;
     }
 
-    // Model returned text without tool calls — feed back and loop.
-    if (choice.content) {
-      console.error("[oracle] ← LLM text: %s", choice.content.slice(0, 120));
-    }
+    for (let j = 0; j < calls.length; j++) {
+      const raw = calls[j];
+      const call = toToolCall(raw, i * 10 + j);
 
-    // If no tool calls and no content, something is wrong.
-    if (!choice.tool_calls && !choice.content) {
-      bridge.done();
-      return {
-        status: "error",
-        reason: "LLM returned empty response (no content, no tool calls)",
-        iterations: budget.iterations,
-        inputTokens: budget.cumulativeInputTokens,
-        outputTokens: budget.cumulativeOutputTokens,
-        costDollars: projectedCost(budget),
-      };
+      console.error("[oracle] -> tool %s (callId=%s)", call.tool, call.callId);
+
+      // Special: finish is the terminal tool — send it and return.
+      if (call.tool === "finish") {
+        const status = (call.args as Record<string, unknown>)?.status === "stored" ? "stored" : "abstain";
+        bridge.send(call);
+        await bridge.recv(); // ack
+        bridge.done();
+        return outcome(
+          status,
+          ((call.args as Record<string, unknown>)?.note as string) ?? "LLM called finish",
+          budget,
+        );
+      }
+
+      // Send tool call to airlock, receive result.
+      bridge.send(call);
+      const tr = await bridge.recv();
+
+      if (!tr) {
+        bridge.done();
+        return outcome("error", "airlock closed connection (EOF)", budget);
+      }
+
+      console.error("[oracle] <- tool %s ok=%s", call.tool, tr.ok);
+
+      // Feed the tool result back to the model (Responses function_call_output).
+      input.push({
+        type: "function_call_output",
+        call_id: raw.call_id,
+        output: JSON.stringify(tr),
+      });
     }
   }
 
@@ -293,12 +296,5 @@ export async function runLLMLoop(
   });
   await bridge.recv();
   bridge.done();
-  return {
-    status: "abstain",
-    reason: "exhausted iterations",
-    iterations: budget.iterations,
-    inputTokens: budget.cumulativeInputTokens,
-    outputTokens: budget.cumulativeOutputTokens,
-    costDollars: projectedCost(budget),
-  };
+  return outcome("abstain", "exhausted iterations", budget);
 }

@@ -2,10 +2,9 @@
 //! below the closed tool catalog.
 //!
 //! The oracle's only legitimate needs:
-//!   - FOUNDRY_ACCESS_TOKEN env var (short-lived Entra bearer, minted by us)
-//!   - AZURE_AI_PROJECT_ENDPOINT env var
+//!   - OPENROUTER_API_KEY env var
 //!   - stdin/stdout/stderr (for the tool bus)
-//!   - TLS to the Foundry project endpoint (via Node's built-in fetch)
+//!   - TLS to openrouter.ai (via Node's built-in fetch)
 //!
 //! Everything else is removed or blocked here.  On Linux we add kernel-level
 //! enforcement (ulimits, seccomp, chroot); on Windows we rely on the portable
@@ -16,65 +15,10 @@
 
 use std::process::Command;
 
-/// Acquire an Entra token for the Foundry data plane via client credentials
-/// (the 'Daemon' app registration). The airlock — trusted — holds the SP
-/// credentials; the child receives only the resulting short-lived bearer.
-/// It cannot mint another token, and the credential dies with the job
-/// (design §3.2). If FOUNDRY_ACCESS_TOKEN is already in our env (e.g. minted
-/// externally, or a future managed-identity shim), it passes straight through.
-fn foundry_token() -> String {
-    if let Ok(t) = std::env::var("FOUNDRY_ACCESS_TOKEN") {
-        if !t.is_empty() {
-            return t;
-        }
-    }
-    let (Ok(tenant), Ok(client_id), Ok(secret)) = (
-        std::env::var("AZURE_TENANT_ID"),
-        std::env::var("AZURE_CLIENT_ID"),
-        std::env::var("AZURE_CLIENT_SECRET"),
-    ) else {
-        eprintln!("[airlock] WARN: no FOUNDRY_ACCESS_TOKEN and AZURE_TENANT_ID/AZURE_CLIENT_ID/AZURE_CLIENT_SECRET incomplete — oracle will fail auth");
-        return String::new();
-    };
-    // Minimal form-encoding (values are expected unreserved; encode the rest).
-    let enc = |s: &str| -> String {
-        s.bytes()
-            .map(|b| match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-                _ => format!("%{b:02X}"),
-            })
-            .collect()
-    };
-    let body = format!(
-        "grant_type=client_credentials&client_id={}&client_secret={}&scope={}",
-        enc(&client_id),
-        enc(&secret),
-        enc("https://ai.azure.com/.default")
-    );
-    let url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");
-    match ureq::post(&url)
-        .set("Content-Type", "application/x-www-form-urlencoded")
-        .send_string(&body)
-    {
-        Ok(resp) => match resp.into_json::<serde_json::Value>() {
-            Ok(v) => v["access_token"].as_str().unwrap_or_default().to_string(),
-            Err(e) => {
-                eprintln!("[airlock] WARN: token response parse failed: {e}");
-                String::new()
-            }
-        },
-        Err(e) => {
-            eprintln!("[airlock] WARN: Entra token acquisition failed: {e}");
-            String::new()
-        }
-    }
-}
-
 /// Prepare a Command to spawn the oracle with the minimum possible environment.
 ///
 /// - Clears ALL inherited env vars.
-/// - Sets only FOUNDRY_ACCESS_TOKEN + AZURE_AI_PROJECT_ENDPOINT (the oracle
-///   needs them to call the Foundry Responses API).
+/// - Sets only OPENROUTER_API_KEY (the oracle needs it to call OpenRouter).
 /// - On Linux: applies ulimits (RSS, CPU, NPROC, NOFILE).
 /// - On Linux: attempts chroot to a scratch dir (best-effort; requires root).
 /// - Seccomp is documented below but not yet wired — it requires per-platform
@@ -83,11 +27,10 @@ pub fn harden_child(cmd: &mut Command) {
     // ── Layer 1: Env strip (portable, highest-impact) ──────────────────
     //
     // Strategy: preserve only the env vars Node.js needs to bootstrap
-    // (OS-specific), then explicitly set the Foundry credentials.  All other
+    // (OS-specific), then explicitly set OPENROUTER_API_KEY.  All other
     // secrets inherited from the airlock's parent are removed.
 
-    let foundry_token = foundry_token();
-    let foundry_endpoint = std::env::var("AZURE_AI_PROJECT_ENDPOINT").unwrap_or_default();
+    let or_key = std::env::var("OPENROUTER_API_KEY").unwrap_or_default();
 
     // Preserve the bare minimum the OS + Node need to start.
     // On Windows: SystemRoot (DLL loader), PATH (node.exe), USERPROFILE.
@@ -105,8 +48,7 @@ pub fn harden_child(cmd: &mut Command) {
             new_env.insert(key.to_string(), val);
         }
     }
-    new_env.insert("FOUNDRY_ACCESS_TOKEN".to_string(), foundry_token);
-    new_env.insert("AZURE_AI_PROJECT_ENDPOINT".to_string(), foundry_endpoint);
+    new_env.insert("OPENROUTER_API_KEY".to_string(), or_key);
 
     cmd.env_clear();
     for (k, v) in &new_env {
@@ -146,7 +88,7 @@ pub fn harden_child(cmd: &mut Command) {
             libc::setrlimit(libc::RLIMIT_NPROC, &nproc);
 
             // NOFILE cap: 16.  stdin, stdout, stderr, and the TLS socket to
-            // the Foundry endpoint are all the oracle legitimately needs.  (Node's event
+            // OpenRouter are all the oracle legitimately needs.  (Node's event
             // loop may use a few extra fds; 16 is comfortably above the minimum
             // but well below what a port-scanner would need.)
             let nofile = libc::rlimit {
