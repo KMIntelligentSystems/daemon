@@ -13,11 +13,34 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { syncIndicatorHistory } from "./refresh-sync.js";
 
 const PORT = Number(process.env["PORT"] ?? 8793);
 const DB_PATH = process.env["ARTIFACT_DB_PATH"] ?? path.join(process.cwd(), "data", "artifacts.db");
 const FILES_DIR = process.env["ARTIFACT_FILES_DIR"] ?? path.join(process.cwd(), "data", "files");
 fs.mkdirSync(FILES_DIR, { recursive: true });
+
+// ── CORS ─────────────────────────────────────────────────────────────────
+// The React app (SWA + Vite dev server) calls this cross-origin with custom
+// X-User-Id / X-User-Role headers, which forces a preflight OPTIONS. Bare
+// node:http has no CORS handling, so we add it here. Configure the allow-list
+// with ALLOWED_ORIGINS (comma-separated); "*" allows any origin.
+const ALLOWED_ORIGINS = (process.env["ALLOWED_ORIGINS"] ?? "*")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const ALLOW_ANY = ALLOWED_ORIGINS.includes("*");
+
+function applyCors(req: http.IncomingMessage, res: http.ServerResponse): void {
+  const origin = req.headers["origin"] as string | undefined;
+  if (!origin) return; // non-browser / same-origin client — no CORS needed
+  const allowed = ALLOW_ANY || ALLOWED_ORIGINS.includes(origin);
+  res.setHeader("Access-Control-Allow-Origin", allowed ? (ALLOW_ANY ? "*" : origin) : "null");
+  res.setHeader("Vary", "Origin");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-User-Id,X-User-Role,X-File-Name,X-Mime-Type");
+  res.setHeader("Access-Control-Max-Age", "86400");
+}
 
 interface ArtifactRow {
   id: string;
@@ -31,10 +54,7 @@ interface ArtifactRow {
   tags: string | null;
 }
 
-function openDb(): DatabaseSync {
-  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
-  const db = new DatabaseSync(DB_PATH);
-  db.exec(`
+const CREATE_SQL = `
     CREATE TABLE IF NOT EXISTS artifact (
       id         TEXT PRIMARY KEY,
       user_id    TEXT NOT NULL,
@@ -47,11 +67,75 @@ function openDb(): DatabaseSync {
       tags       TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_artifact_user ON artifact(user_id, category, subject);
-  `);
-  return db;
+  `;
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Azure Files (SMB/cifs) mounts in ACA do not support POSIX byte-range
+// locking, which SQLite's default "unix" VFS requires — every open fails
+// with "database is locked" (fcntl → ENOLCK → SQLITE_BUSY), even on a
+// brand-new file with zero SMB handles. The "unix-dotfile" VFS uses a lock
+// FILE (<db>.lock) instead, which works over SMB and still gives real
+// cross-process mutual exclusion (e.g. old/new replica overlap during a
+// revision swap). WAL stays off: its shared-memory index needs mmap, which
+// is unreliable on network filesystems — the default rollback journal works.
+const DB_URI =
+  process.platform === "win32" ? DB_PATH : `file:${DB_PATH}?vfs=unix-dotfile`;
+
+// Attempt one DB open+init. Returns the db or throws. Caller retries.
+function tryOpenDb(): DatabaseSync {
+  const d = new DatabaseSync(DB_URI);
+  try {
+    d.exec("PRAGMA busy_timeout=5000;");
+    d.exec(CREATE_SQL);
+    return d;
+  } catch (e) {
+    try { d.close(); } catch { /* ignore */ }
+    throw e;
+  }
 }
 
-const db = openDb();
+// DB is opened in the background so the HTTP server (and its /health probe)
+// starts immediately even while Azure Files holds a stale SMB lease on
+// artifacts.db after a revision swap. DB routes return 503 until ready.
+let _db: DatabaseSync | null = null;
+let _dbError: string | null = null;
+
+async function initDb(): Promise<void> {
+  fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      _db = tryOpenDb();
+      _dbError = null;
+      console.log(`[artifact-service] artifacts.db ready (attempt ${attempt})`);
+      return;
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      _dbError = msg;
+      if (!/locked|busy/i.test(msg)) {
+        console.error(`[artifact-service] openDb fatal (non-lock) error: ${msg}`);
+      }
+      console.warn(`[artifact-service] openDb attempt ${attempt} failed: ${msg}; retrying in 3s…`);
+      // A crashed predecessor can leave a stale dot-file lock (<db>.lock)
+      // behind. Clear it periodically so a single crash can't wedge the
+      // service forever.
+      if (attempt % 10 === 0) {
+        try {
+          fs.rmSync(DB_PATH + ".lock", { recursive: true, force: true });
+          console.warn(`[artifact-service] cleared stale lock file (attempt ${attempt})`);
+        } catch { /* none present or already gone */ }
+      }
+      await sleep(3000);
+    }
+  }
+}
+
+// Throws until the background init has connected. Route handlers catch this
+// and translate it to 503 so the service never crashes on a locked DB.
+function db(): DatabaseSync {
+  if (!_db) throw new Error(`DB not ready${_dbError ? ` (last error: ${_dbError})` : ""}`);
+  return _db;
+}
 
 function json(res: http.ServerResponse, code: number, body: unknown) {
   const b = JSON.stringify(body);
@@ -77,26 +161,26 @@ function readBody(req: http.IncomingMessage): Promise<unknown> {
 
 function listArtifacts(userId: string, isAdmin: boolean): ArtifactRow[] {
   if (isAdmin) {
-    return db.prepare("SELECT * FROM artifact ORDER BY category, subject, created_at DESC").all() as unknown as ArtifactRow[];
+    return db().prepare("SELECT * FROM artifact ORDER BY category, subject, created_at DESC").all() as unknown as ArtifactRow[];
   }
-  return db.prepare("SELECT * FROM artifact WHERE user_id = ? ORDER BY category, subject, created_at DESC").all(userId) as unknown as ArtifactRow[];
+  return db().prepare("SELECT * FROM artifact WHERE user_id = ? ORDER BY category, subject, created_at DESC").all(userId) as unknown as ArtifactRow[];
 }
 
 function saveArtifact(body: { userId: string; category: string; subject: string; title: string; mimeType: string; url: string; tags?: string }): ArtifactRow {
   const id = `art-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const now = new Date().toISOString();
-  db.prepare(
+  db().prepare(
     "INSERT INTO artifact (id, user_id, category, subject, title, mime_type, url, created_at, tags) VALUES (?,?,?,?,?,?,?,?,?)"
   ).run(id, body.userId, body.category, body.subject, body.title, body.mimeType, body.url, now, body.tags ?? null);
-  return db.prepare("SELECT * FROM artifact WHERE id = ?").get(id) as unknown as ArtifactRow;
+  return db().prepare("SELECT * FROM artifact WHERE id = ?").get(id) as unknown as ArtifactRow;
 }
 
 function deleteArtifact(id: string, userId: string, isAdmin: boolean): boolean {
   if (isAdmin) {
-    const r = db.prepare("DELETE FROM artifact WHERE id = ?").run(id);
+    const r = db().prepare("DELETE FROM artifact WHERE id = ?").run(id);
     return r.changes > 0;
   }
-  const r = db.prepare("DELETE FROM artifact WHERE id = ? AND user_id = ?").run(id, userId);
+  const r = db().prepare("DELETE FROM artifact WHERE id = ? AND user_id = ?").run(id, userId);
   return r.changes > 0;
 }
 
@@ -104,10 +188,17 @@ function deleteArtifact(id: string, userId: string, isAdmin: boolean): boolean {
 
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://127.0.0.1:${PORT}`);
+  applyCors(req, res);
+
+  // Preflight — answer before any route logic so the browser passes the check.
+  if (req.method === "OPTIONS") {
+    res.writeHead(204).end();
+    return;
+  }
 
   // Health
   if (req.method === "GET" && url.pathname === "/health") {
-    return json(res, 200, { ok: true });
+    return json(res, 200, { ok: true, dbReady: _db !== null });
   }
 
   // Header: X-User-Id (required for all artifact ops), X-User-Role (admin|user)
@@ -116,6 +207,14 @@ const server = http.createServer(async (req, res) => {
 
   if (!userId && url.pathname !== "/health") {
     return json(res, 401, { error: "X-User-Id header required" });
+  }
+
+  // DB-backed routes return 503 until the background init has connected, so a
+  // transient Azure Files lock after a revision swap never crashes the replica.
+  const needsDb =
+    url.pathname === "/artifacts" || url.pathname.startsWith("/artifacts/");
+  if (needsDb && !_db) {
+    return json(res, 503, { error: "artifact store not ready", detail: _dbError });
   }
 
   // GET /artifacts — list (admin sees all, user sees own)
@@ -183,10 +282,22 @@ const server = http.createServer(async (req, res) => {
   // GET /artifacts/:id — get one (for preview)
   if (req.method === "GET" && url.pathname.startsWith("/artifacts/")) {
     const id = url.pathname.slice("/artifacts/".length);
-    const row = db.prepare("SELECT * FROM artifact WHERE id = ?").get(id) as unknown as ArtifactRow | undefined;
+    const row = db().prepare("SELECT * FROM artifact WHERE id = ?").get(id) as unknown as ArtifactRow | undefined;
     if (!row) return json(res, 404, { error: "not found" });
     if (!isAdmin && row.user_id !== userId) return json(res, 403, { error: "no permission" });
     return json(res, 200, row);
+  }
+
+  // POST /refresh-sync — push tagged backbone CSVs to the refresh-daemon's
+  // indicator_history (HMAC-authed /refresh/bootstrap). Admin-only: it's a
+  // system verb, not a user op — the azure-foundry broker tool sends the
+  // "admin" role header for exactly this one path. Body: { dryRun?: boolean }.
+  if (req.method === "POST" && url.pathname === "/refresh-sync") {
+    if (!isAdmin) return json(res, 403, { error: "refresh-sync requires admin role" });
+    if (!_db) return json(res, 503, { error: "artifact store not ready", detail: _dbError });
+    const body = (await readBody(req).catch(() => ({}))) as { dryRun?: boolean };
+    const report = await syncIndicatorHistory(db(), FILES_DIR, { dryRun: body.dryRun === true, reason: "api" });
+    return json(res, report.ok ? 200 : 502, report);
   }
 
   res.writeHead(404).end();
@@ -195,3 +306,6 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, () => {
   console.log(`[artifact-service] listening on :${PORT} (artifacts.db: ${DB_PATH})`);
 });
+
+// Kick off DB init in the background; do not block listen().
+void initDb();

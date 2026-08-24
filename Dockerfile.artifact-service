@@ -15,6 +15,9 @@ FROM node:24-bookworm-slim
 WORKDIR /app
 COPY --from=build /src/dist ./dist
 COPY --from=build /src/node_modules ./node_modules
-ENV PORT=8793 ARTIFACT_DB_PATH=/data/artifacts.db
+# Baked-in closed allowlist for /refresh-sync (same series-map as http_proxy data/)
+COPY daemon/artifact-service/data/series-map.json ./data/series-map.json
+ENV PORT=8793 ARTIFACT_DB_PATH=/data/artifacts.db ARTIFACT_FILES_DIR=/data/files
+# REFRESH_DAEMON_URL / DAEMON_HMAC_KEY set via ACA secret/env for /refresh-sync
 EXPOSE 8793
 CMD ["node", "dist/server.js"]

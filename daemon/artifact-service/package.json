@@ -5,7 +5,8 @@
   "main": "dist/server.js",
   "scripts": {
     "build": "tsc",
-    "start": "node dist/server.js"
+    "start": "node dist/server.js",
+    "test": "npm run build && node test/refresh-sync.test.mjs"
   },
   "dependencies": {},
   "devDependencies": {

@@ -54,8 +54,16 @@ daemon/
     tool-call.schema.json              oracle → airlock  { callId, tool, args }
     tool-result.schema.json            airlock → oracle  { callId, ok, result | error }
     task-context.schema.json           airlock → oracle at spawn
-  airlock/     Rust crate — trusted capability broker. Executes tools; holds keys, DB, HMAC.
-  oracle/      Node package — untrusted agent. Runs the LLM tool-loop; only LLM_API_KEY.
+  airlock/          Rust crate — trusted capability broker. Executes tools; holds keys, DB, HMAC.
+  oracle/           Node package — untrusted agent. Runs the LLM tool-loop; only LLM_API_KEY.
+  artifact-service/ Node — user-scoped artifact catalog (save/list/upload/read).
+                    ALSO owns POST /refresh-sync, the azure-side analog of
+                    http_proxy's refresh-history bridge: tagged text/csv rows in
+                    the catalog → validated against a baked-in series-map.json
+                    allowlist → HMAC-signed POST to refresh-daemon /refresh/bootstrap
+                    → indicator_history upsert. Admin-role gated; the azure-foundry
+                    broker's sync_indicator_history tool invokes it and only ever
+                    sees the SyncReport (never CSV bytes).
 ```
 
 ## Delivery contract (assumptions — confirm)

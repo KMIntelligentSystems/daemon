@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "description": "Checked-in mapping between canonical index CSV files and the indicator_history seriesIds they seed. Consumed by scripts/load-index-csvs.mjs (validation + artifacts.db load) and, downstream, by the refresh-history bridge (artifacts.db -> /refresh/bootstrap). Only series listed here may be seeded into the target's indicator_history (closed seed surface).",
+  "series": {
+    "m3_total_shipments_nsa": {
+      "canonicalFile": "m3_nsa_total_mfg.csv",
+      "header": "date,value",
+      "source": "Census M3 (Manufacturers' Shipments)",
+      "units": "Millions of Dollars",
+      "cadence": "monthly",
+      "seasonalAdjustment": "not_seasonally_adjusted",
+      "valueRange": [150000, 900000],
+      "minObs": 200,
+      "consumedBy": ["sub-stl-deepseek", "sub-m3-forecasts", "sub-mfg-productivity"]
+    },
+    "fred_ipman": {
+      "canonicalFile": "fred_ipman.csv",
+      "header": "date,value",
+      "source": "FRED IPMAN (Industrial Production: Manufacturing)",
+      "units": "Index 2017=100",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [50, 120],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek", "sub-mfg-productivity"]
+    },
+    "bls_ces_mfg_employment": {
+      "canonicalFile": "ces_mfg_employment_sa.csv",
+      "header": "date,value",
+      "source": "BLS CES Manufacturing Employment",
+      "units": "Thousands of Persons",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [10000, 17000],
+      "minObs": 200,
+      "consumedBy": ["sub-mfg-productivity"]
+    },
+    "bls_ces_mfg_hours": {
+      "canonicalFile": "ces_mfg_hours_sa.csv",
+      "header": "date,value",
+      "source": "BLS CES Manufacturing Average Weekly Hours",
+      "units": "Hours",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [30, 50],
+      "minObs": 200,
+      "consumedBy": ["sub-mfg-productivity", "sub-statlearn-deepseek"]
+    },
+    "bls_ppi_mfg": {
+      "canonicalFile": "ppi_mfg_nsa.csv",
+      "header": "date,value",
+      "source": "BLS PPI (Industry Net Output: Total Manufacturing Industries)",
+      "units": "Index",
+      "cadence": "monthly",
+      "seasonalAdjustment": "not_seasonally_adjusted",
+      "valueRange": [100, 400],
+      "minObs": 200,
+      "consumedBy": ["sub-mfg-productivity"]
+    },
+    "fred_cfnai": {
+      "canonicalFile": "fred_cfnai.csv",
+      "header": "date,value",
+      "source": "FRED CFNAI (Chicago Fed National Activity Index)",
+      "units": "Index",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [-25, 15],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    },
+    "fred_mcumfn": {
+      "canonicalFile": "fred_mcumfn.csv",
+      "header": "date,value",
+      "source": "FRED MCUMFN (Capacity Utilization: Manufacturing)",
+      "units": "Percent",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [50, 95],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    },
+    "fred_tcu": {
+      "canonicalFile": "fred_tcu.csv",
+      "header": "date,value",
+      "source": "FRED TCU (Capacity Utilization: Total Industry)",
+      "units": "Percent",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [50, 95],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    },
+    "fred_empire_state_mfg": {
+      "canonicalFile": "fred_empire_state_mfg.csv",
+      "header": "date,value",
+      "source": "FRED GACDISA066MSFRBNY (Empire State Mfg: General Business Conditions)",
+      "units": "Index",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [-100, 100],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    },
+    "fred_philly_fed_mfg": {
+      "canonicalFile": "fred_philly_fed_mfg.csv",
+      "header": "date,value",
+      "source": "FRED GACDFSA066MSFRBPHI (Philadelphia Fed Mfg: General Activity)",
+      "units": "Index",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [-100, 100],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    },
+    "fred_dallas_fed_mfg": {
+      "canonicalFile": "fred_dallas_fed_mfg.csv",
+      "header": "date,value",
+      "source": "FRED BACTSAMFRBDAL (Dallas Fed Mfg: General Business Activity)",
+      "units": "Index",
+      "cadence": "monthly",
+      "seasonalAdjustment": "seasonally_adjusted",
+      "valueRange": [-100, 100],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    },
+    "m3_new_orders": {
+      "canonicalFile": "m3_new_orders_nsa.csv",
+      "header": "date,value",
+      "source": "Census M3 (Manufacturers' New Orders, NSA)",
+      "units": "Millions of Dollars",
+      "cadence": "monthly",
+      "seasonalAdjustment": "not_seasonally_adjusted",
+      "valueRange": [150000, 1000000],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    },
+    "m3_unfilled_orders": {
+      "canonicalFile": "m3_unfilled_orders_nsa.csv",
+      "header": "date,value",
+      "source": "Census M3 (Manufacturers' Unfilled Orders, NSA)",
+      "units": "Millions of Dollars",
+      "cadence": "monthly",
+      "seasonalAdjustment": "not_seasonally_adjusted",
+      "valueRange": [300000, 5000000],
+      "minObs": 200,
+      "consumedBy": ["sub-statlearn-deepseek"]
+    }
+  }
+}
