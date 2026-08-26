@@ -13,7 +13,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { syncIndicatorHistory } from "./refresh-sync.js";
+import { syncIndicatorHistory, hmacSign, REFRESH_DAEMON_URL } from "./refresh-sync.js";
 
 const PORT = Number(process.env["PORT"] ?? 8793);
 const DB_PATH = process.env["ARTIFACT_DB_PATH"] ?? path.join(process.cwd(), "data", "artifacts.db");
@@ -166,12 +166,15 @@ function listArtifacts(userId: string, isAdmin: boolean): ArtifactRow[] {
   return db().prepare("SELECT * FROM artifact WHERE user_id = ? ORDER BY category, subject, created_at DESC").all(userId) as unknown as ArtifactRow[];
 }
 
-function saveArtifact(body: { userId: string; category: string; subject: string; title: string; mimeType: string; url: string; tags?: string }): ArtifactRow {
+function saveArtifact(body: { userId: string; category: string; subject: string; title: string; mimeType: string; url: string; tags?: string | string[] }): ArtifactRow {
   const id = `art-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
   const now = new Date().toISOString();
+  // tags arrives as a JSON string or (from older clients) a string[] — normalize
+  // to a single JSON string so node:sqlite can bind it.
+  const tags = Array.isArray(body.tags) ? JSON.stringify(body.tags) : (body.tags ?? null);
   db().prepare(
     "INSERT INTO artifact (id, user_id, category, subject, title, mime_type, url, created_at, tags) VALUES (?,?,?,?,?,?,?,?,?)"
-  ).run(id, body.userId, body.category, body.subject, body.title, body.mimeType, body.url, now, body.tags ?? null);
+  ).run(id, body.userId, body.category, body.subject, body.title, body.mimeType, body.url, now, tags);
   return db().prepare("SELECT * FROM artifact WHERE id = ?").get(id) as unknown as ArtifactRow;
 }
 
@@ -298,6 +301,28 @@ const server = http.createServer(async (req, res) => {
     const body = (await readBody(req).catch(() => ({}))) as { dryRun?: boolean };
     const report = await syncIndicatorHistory(db(), FILES_DIR, { dryRun: body.dryRun === true, reason: "api" });
     return json(res, report.ok ? 200 : 502, report);
+  }
+
+  // POST /refresh-panel — deterministic export of indicator_history rows for
+  // the azure orchestrator's read_indicator_panel tool. Admin-only (same gate
+  // as /refresh-sync). Body: { subject?: string, series: string[] }. Proxies
+  // the daemon's HMAC-signed export; never materializes SQL itself.
+  if (req.method === "POST" && url.pathname === "/refresh-panel") {
+    if (!isAdmin) return json(res, 403, { error: "refresh-panel requires admin role" });
+    const body = (await readBody(req).catch(() => ({}))) as { subject?: string; series?: string[] };
+    if (!Array.isArray(body.series) || body.series.length === 0) {
+      return json(res, 400, { error: "series[] required" });
+    }
+    const payload = JSON.stringify({ subject: body.subject ?? null, series: body.series });
+    const daemonRes = await fetch(`${REFRESH_DAEMON_URL}/refresh/export-panel`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Daemon-Sig": hmacSign(payload) },
+      body: payload,
+    });
+    const text = await daemonRes.text();
+    res.writeHead(daemonRes.status, { "Content-Type": "application/json" });
+    res.end(text);
+    return;
   }
 
   res.writeHead(404).end();

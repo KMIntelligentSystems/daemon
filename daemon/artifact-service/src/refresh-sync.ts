@@ -26,10 +26,10 @@ import { DatabaseSync } from "node:sqlite";
 
 const DEFAULT_SERIES_MAP_PATH = path.join(process.cwd(), "data", "series-map.json");
 const SERIES_MAP_PATH = process.env["SERIES_MAP_PATH"] ?? DEFAULT_SERIES_MAP_PATH;
-const REFRESH_DAEMON_URL = process.env["REFRESH_DAEMON_URL"] ?? "http://127.0.0.1:8792";
+export const REFRESH_DAEMON_URL = process.env["REFRESH_DAEMON_URL"] ?? "http://127.0.0.1:8792";
 const HMAC_KEY = process.env["DAEMON_HMAC_KEY"] ?? "dev-insecure-hmac-key-change-me";
 
-function hmacSign(payload: string): string {
+export function hmacSign(payload: string): string {
   return crypto.createHmac("sha256", HMAC_KEY).update(payload).digest("hex");
 }
 
