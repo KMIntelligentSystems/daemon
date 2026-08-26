@@ -9,6 +9,7 @@
  * Storage: SQLite on Azure Files (/data/artifacts.db — NOT the http_proxy
  * artifacts.db; this is a fresh service-specific DB).
  */
+import crypto from "node:crypto";
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
@@ -52,6 +53,56 @@ interface ArtifactRow {
   url: string;
   created_at: string;
   tags: string | null;
+}
+
+// ── /refresh-panel: read-only export from the SHARED refresh.db ───────────
+//
+// Open once lazily (read-only); this process never writes refresh.db — the
+// refresh-daemon on the same Azure Files volume is the only writer. The
+// read-only query (SELECT, ORDER BY) is the deterministic export contract.
+
+interface IndicatorHistoryRow {
+  series_id: string;
+  date: string;
+  value: number;
+  is_preliminary: number;
+  observed_at: string;
+}
+
+interface PanelExport {
+  subjectId: string | null;
+  series: string[];
+  rows: { seriesId: string; observations: { date: string; value: number; is_preliminary: number }[] }[];
+  panelHash: string;
+}
+
+let _refreshDb: DatabaseSync | null = null;
+function refreshDb(): DatabaseSync {
+  if (!_refreshDb) {
+    const p = process.env["REFRESH_DB_PATH"] ?? "/data/refresh.db";
+    if (!fs.existsSync(p)) throw new Error(`refresh.db not found at REFRESH_DB_PATH=${p}`);
+    // This service is never a writer; readOnly:true is the contract.
+    _refreshDb = new DatabaseSync(p, { readOnly: true });
+  }
+  return _refreshDb;
+}
+
+function exportIndicatorPanel(series: string[], subject: string | null): PanelExport {
+  const db = refreshDb();
+  const stmt = db.prepare(
+    "SELECT date, value, is_preliminary FROM indicator_history WHERE series_id = ? ORDER BY date ASC"
+  );
+  const rows = series.map((s) => ({
+    seriesId: s,
+    observations: (stmt.all(s) as unknown as IndicatorHistoryRow[]).map((r) => ({
+      date: r.date,
+      value: r.value,
+      is_preliminary: r.is_preliminary,
+    })),
+  }));
+  // Deterministic over canonical rows — same history → same hash.
+  const panelHash = crypto.createHash("sha256").update(JSON.stringify(rows)).digest("hex");
+  return { subjectId: subject, series, rows, panelHash };
 }
 
 const CREATE_SQL = `
@@ -303,26 +354,19 @@ const server = http.createServer(async (req, res) => {
     return json(res, report.ok ? 200 : 502, report);
   }
 
-  // POST /refresh-panel — deterministic export of indicator_history rows for
-  // the azure orchestrator's read_indicator_panel tool. Admin-only (same gate
-  // as /refresh-sync). Body: { subject?: string, series: string[] }. Proxies
-  // the daemon's HMAC-signed export; never materializes SQL itself.
+  // POST /refresh-panel — read-only export of refresh.db indicator_history
+  // rows for the azure orchestrator's read_indicator_panel tool. Admin-gated.
+  // served from the SAME refresh.db the refresh-daemon shares (read-only file
+  // open) — the daemon stays event-driven only; the artifact-service is the
+  // only interaction surface.
   if (req.method === "POST" && url.pathname === "/refresh-panel") {
     if (!isAdmin) return json(res, 403, { error: "refresh-panel requires admin role" });
     const body = (await readBody(req).catch(() => ({}))) as { subject?: string; series?: string[] };
     if (!Array.isArray(body.series) || body.series.length === 0) {
       return json(res, 400, { error: "series[] required" });
     }
-    const payload = JSON.stringify({ subject: body.subject ?? null, series: body.series });
-    const daemonRes = await fetch(`${REFRESH_DAEMON_URL}/refresh/export-panel`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json", "X-Daemon-Sig": hmacSign(payload) },
-      body: payload,
-    });
-    const text = await daemonRes.text();
-    res.writeHead(daemonRes.status, { "Content-Type": "application/json" });
-    res.end(text);
-    return;
+    const panel = exportIndicatorPanel(body.series, body.subject ?? null);
+    return json(res, 200, panel);
   }
 
   res.writeHead(404).end();

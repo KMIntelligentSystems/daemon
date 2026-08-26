@@ -87,6 +87,7 @@ const filesDir = path.join(tmp, "files");
 fs.mkdirSync(filesDir, { recursive: true });
 const dbPath = path.join(tmp, "artifacts.db");
 const seriesMapPath = path.join(tmp, "series-map.json");
+const refreshDbPath = path.join(tmp, "refresh.db");
 const csv = "date,value\n2024-01,10\n2024-02,11\n2024-03-15,12\n";
 fs.writeFileSync(
   seriesMapPath,
@@ -98,6 +99,16 @@ fs.writeFileSync(
   }),
 );
 
+// ── Seed refresh.db with one test_series (the "refresh-daemon" in the test) ─
+{
+  const { DatabaseSync } = await import("node:sqlite");
+  const rdb = new DatabaseSync(refreshDbPath);
+  rdb.exec("CREATE TABLE IF NOT EXISTS indicator_history (series_id TEXT NOT NULL, date TEXT NOT NULL, value REAL, is_preliminary INTEGER, observed_at TEXT, PRIMARY KEY (series_id, date))");
+  rdb.prepare("INSERT INTO indicator_history (series_id, date, value, is_preliminary, observed_at) VALUES (?,?,?,?,?)").run("test_series", "2024-01", 10, 0, new Date().toISOString());
+  rdb.prepare("INSERT INTO indicator_history (series_id, date, value, is_preliminary, observed_at) VALUES (?,?,?,?,?)").run("test_series", "2024-02", 11, 0, new Date().toISOString());
+  rdb.close();
+}
+
 const svcPort = await getPort();
 const svc = spawn("node", ["dist/server.js"], {
   cwd: SERVICE_DIR,
@@ -108,6 +119,7 @@ const svc = spawn("node", ["dist/server.js"], {
     ARTIFACT_FILES_DIR: filesDir,
     SERIES_MAP_PATH: seriesMapPath,
     REFRESH_DAEMON_URL: `http://127.0.0.1:${daemonPort}`,
+    REFRESH_DB_PATH: refreshDbPath,
     DAEMON_HMAC_KEY: HMAC_KEY,
   },
   stdio: "pipe",
@@ -191,7 +203,7 @@ const denied = await fetch(`http://127.0.0.1:${svcPort}/refresh-sync`, {
 });
 check("non-admin → 403", denied.status === 403);
 
-// 4. refresh-panel admin → daemon signed, body proxied verbatim, 403 for non-admin
+// 4. refresh-panel: admin → 200 with row order + hash; non-admin → 403
 const panel = await fetch(`http://127.0.0.1:${svcPort}/refresh-panel`, {
   method: "POST",
   headers: headers({ "Content-Type": "application/json" }),
@@ -199,8 +211,11 @@ const panel = await fetch(`http://127.0.0.1:${svcPort}/refresh-panel`, {
 });
 check("refresh-panel → 200", panel.status === 200);
 const panelJson = await panel.json();
-check("panel rows proxied", panelJson.panelHash === "abc123stub" && panelJson.rows[0].observations.length === 1, JSON.stringify(panelJson));
-check("daemon signed call seen", exportCalls.length === 1 && exportCalls[0].series[0] === "test_series", JSON.stringify(exportCalls));
+check("two observations", panelJson.rows?.[0]?.observations?.length === 2, JSON.stringify(panelJson));
+check("observations ordered by date ASC",
+  panelJson.rows?.[0]?.observations?.[0]?.date === "2024-01" && panelJson.rows?.[0]?.observations?.[1]?.date === "2024-02",
+  JSON.stringify(panelJson.rows?.[0]?.observations));
+check("panelHash present", typeof panelJson.panelHash === "string" && panelJson.panelHash.length === 64, JSON.stringify(panelJson.panelHash?.length));
 const panelDenied = await fetch(`http://127.0.0.1:${svcPort}/refresh-panel`, {
   method: "POST",
   headers: { "X-User-Id": "test", "Content-Type": "application/json" },
