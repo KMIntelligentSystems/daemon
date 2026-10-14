@@ -12,9 +12,10 @@
  *     → refresh-daemon upserts into indicator_history keyed on (series_id, date)
  *
  * The LLM never sees the payload — a thin broker tool
- * (azure-foundry: sync_indicator_history) just fires POST /refresh-sync here
- * with the user's X-User-Id / X-User-Role headers. Same trust shape as the
- * http_proxy orchestrator tool, whose execute() just calls syncIndicatorHistory().
+ * (azure-foundry: sync_indicator_history) just fires POST /refresh-sync with
+ * the user's delegated Entra bearer token. This service verifies the token and
+ * derives admin privilege from app-role/object-id claims; caller-authored
+ * X-User-Id / X-User-Role headers are intentionally unsupported.
  *
  * Idempotent by construction: the daemon's INSERT OR REPLACE converges no
  * matter how often the same content is pushed.

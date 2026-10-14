@@ -1,5 +1,4 @@
-//! The capability broker. Every method here holds a capability the oracle does
-//! not have (network + keys, DB write, HMAC). `dispatch` is the single entry
+            //! The capability broker.b. `dispatch` is the single entry
 //! point the tool loop calls; it validates and routes one ToolCall.
 
 use anyhow::{Context, Result};

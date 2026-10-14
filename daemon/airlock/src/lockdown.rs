@@ -47,8 +47,8 @@ fn foundry_token() -> String {
     };
     let body = format!(
         "grant_type=client_credentials&client_id={}&client_secret={}&scope={}",
-        enc(&client_id),
-        enc(&secret),
+    enc(&client_id),    
+        enc(&secret),   
         enc("https://ai.azure.com/.default")
     );
     let url = format!("https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token");

@@ -14,7 +14,8 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { syncIndicatorHistory, hmacSign, REFRESH_DAEMON_URL } from "./refresh-sync.js";
+import { syncIndicatorHistory } from "./refresh-sync.js";
+import { authenticateArtifactRequest, type ArtifactPrincipal } from "./auth.js";
 
 const PORT = Number(process.env["PORT"] ?? 8793);
 const DB_PATH = process.env["ARTIFACT_DB_PATH"] ?? path.join(process.cwd(), "data", "artifacts.db");
@@ -22,10 +23,10 @@ const FILES_DIR = process.env["ARTIFACT_FILES_DIR"] ?? path.join(process.cwd(), 
 fs.mkdirSync(FILES_DIR, { recursive: true });
 
 // ── CORS ─────────────────────────────────────────────────────────────────
-// The React app (SWA + Vite dev server) calls this cross-origin with custom
-// X-User-Id / X-User-Role headers, which forces a preflight OPTIONS. Bare
-// node:http has no CORS handling, so we add it here. Configure the allow-list
-// with ALLOWED_ORIGINS (comma-separated); "*" allows any origin.
+// The React app (SWA + Vite dev server) calls this cross-origin with an MSAL
+// bearer token plus upload metadata headers, which forces a preflight OPTIONS.
+// Bare node:http has no CORS handling, so we add it here. Configure the exact
+// origin allow-list with ALLOWED_ORIGINS; production must never use "*".
 const ALLOWED_ORIGINS = (process.env["ALLOWED_ORIGINS"] ?? "*")
   .split(",")
   .map((s) => s.trim())
@@ -39,7 +40,7 @@ function applyCors(req: http.IncomingMessage, res: http.ServerResponse): void {
   res.setHeader("Access-Control-Allow-Origin", allowed ? (ALLOW_ANY ? "*" : origin) : "null");
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type,X-User-Id,X-User-Role,X-File-Name,X-Mime-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,X-File-Name,X-Mime-Type");
   res.setHeader("Access-Control-Max-Age", "86400");
 }
 
@@ -118,6 +119,12 @@ const CREATE_SQL = `
       tags       TEXT
     );
     CREATE INDEX IF NOT EXISTS idx_artifact_user ON artifact(user_id, category, subject);
+    CREATE TABLE IF NOT EXISTS artifact_file (
+      name       TEXT PRIMARY KEY,
+      user_id    TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_artifact_file_user ON artifact_file(user_id, created_at);
   `;
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -255,25 +262,31 @@ const server = http.createServer(async (req, res) => {
     return json(res, 200, { ok: true, dbReady: _db !== null });
   }
 
-  // Header: X-User-Id (required for all artifact ops), X-User-Role (admin|user)
-  const userId = req.headers["x-user-id"] as string | undefined;
-  const isAdmin = (req.headers["x-user-role"] as string | undefined) === "admin";
-
-  if (!userId && url.pathname !== "/health") {
-    return json(res, 401, { error: "X-User-Id header required" });
+  // Every non-health operation requires a Microsoft Entra access token.
+  // Identity and admin privilege come only from verified token claims.
+  //
+  // REMOVED (never restore): X-User-Id and X-User-Role. A caller can forge
+  // arbitrary HTTP headers, so they cannot be an authentication boundary.
+  let principal: ArtifactPrincipal;
+  try {
+    principal = await authenticateArtifactRequest(req);
+  } catch (error) {
+    return json(res, 401, { error: "unauthorized", detail: error instanceof Error ? error.message : String(error) });
   }
+  const userId = principal.id;
+  const isAdmin = principal.isAdmin;
 
   // DB-backed routes return 503 until the background init has connected, so a
   // transient Azure Files lock after a revision swap never crashes the replica.
   const needsDb =
-    url.pathname === "/artifacts" || url.pathname.startsWith("/artifacts/");
+    url.pathname === "/artifacts" || url.pathname.startsWith("/artifacts/") || url.pathname.startsWith("/files/");
   if (needsDb && !_db) {
     return json(res, 503, { error: "artifact store not ready", detail: _dbError });
   }
 
   // GET /artifacts — list (admin sees all, user sees own)
   if (req.method === "GET" && url.pathname === "/artifacts") {
-    return json(res, 200, { artifacts: listArtifacts(userId!, isAdmin) });
+    return json(res, 200, { artifacts: listArtifacts(userId, isAdmin) });
   }
 
   // POST /artifacts — save
@@ -283,7 +296,7 @@ const server = http.createServer(async (req, res) => {
       return json(res, 400, { error: "category, subject, title, mimeType, url required" });
     }
     const saved = saveArtifact({
-      userId: userId!,
+      userId,
       category: body.category,
       subject: body.subject,
       title: body.title,
@@ -297,7 +310,7 @@ const server = http.createServer(async (req, res) => {
   // DELETE /artifacts/:id — discard (admin can delete any; user only own)
   if (req.method === "DELETE" && url.pathname.startsWith("/artifacts/")) {
     const id = url.pathname.slice("/artifacts/".length);
-    const deleted = deleteArtifact(id, userId!, isAdmin);
+    const deleted = deleteArtifact(id, userId, isAdmin);
     if (!deleted) return json(res, 404, { error: "not found or no permission" });
     return json(res, 200, { ok: true });
   }
@@ -317,13 +330,23 @@ const server = http.createServer(async (req, res) => {
     const storedName = `${id}${ext}`;
     const filePath = path.join(FILES_DIR, storedName);
     fs.writeFileSync(filePath, content);
+    db().prepare("INSERT INTO artifact_file (name, user_id, created_at) VALUES (?,?,?)")
+      .run(storedName, userId, new Date().toISOString());
     const url = `/files/${storedName}`;
     return json(res, 201, { url, bytes: content.length });
   }
 
-  // GET /files/:name — serve uploaded file
+  // GET /files/:name — serve only a file owned by this verified principal.
   if (req.method === "GET" && url.pathname.startsWith("/files/")) {
-    const name = url.pathname.slice("/files/".length);
+    const name = path.basename(url.pathname.slice("/files/".length));
+    const ownership = db().prepare("SELECT user_id FROM artifact_file WHERE name = ?").get(name) as { user_id: string } | undefined;
+    // Compatibility for files uploaded before artifact_file existed: a saved
+    // catalog row is authoritative for owner lookup. Unsaved legacy pending
+    // files intentionally fail closed and must be regenerated.
+    const catalogOwner = ownership ?? db().prepare("SELECT user_id FROM artifact WHERE url = ? LIMIT 1").get(`/files/${name}`) as { user_id: string } | undefined;
+    if (!catalogOwner || (!isAdmin && catalogOwner.user_id !== userId)) {
+      return json(res, 404, { error: "not found" });
+    }
     const filePath = path.join(FILES_DIR, name);
     if (!fs.existsSync(filePath)) return json(res, 404, { error: "not found" });
     const ext = path.extname(name);

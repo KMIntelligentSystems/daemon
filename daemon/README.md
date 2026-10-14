@@ -57,13 +57,17 @@ daemon/
   airlock/          Rust crate — trusted capability broker. Executes tools; holds keys, DB, HMAC.
   oracle/           Node package — untrusted agent. Runs the LLM tool-loop; only LLM_API_KEY.
   artifact-service/ Node — user-scoped artifact catalog (save/list/upload/read).
-                    ALSO owns POST /refresh-sync, the azure-side analog of
-                    http_proxy's refresh-history bridge: tagged text/csv rows in
-                    the catalog → validated against a baked-in series-map.json
-                    allowlist → HMAC-signed POST to refresh-daemon /refresh/bootstrap
-                    → indicator_history upsert. Admin-role gated; the azure-foundry
-                    broker's sync_indicator_history tool invokes it and only ever
-                    sees the SyncReport (never CSV bytes).
+                    Every non-health route verifies a Microsoft Entra bearer
+                    token and derives immutable tid:oid ownership plus admin
+                    app-role/object-id claims; caller-authored X-User-Id and
+                    X-User-Role headers are forbidden. ALSO owns POST
+                    /refresh-sync, the azure-side analog of http_proxy's
+                    refresh-history bridge: tagged text/csv rows in the catalog
+                    → validated against a baked-in series-map.json allowlist →
+                    HMAC-signed POST to refresh-daemon /refresh/bootstrap →
+                    indicator_history upsert. Entra-admin-gated; the
+                    azure-foundry sync_indicator_history tool invokes it and
+                    only ever sees the SyncReport (never CSV bytes).
 ```
 
 ## Delivery contract (assumptions — confirm)
