@@ -55,6 +55,13 @@ daemon/
     tool-result.schema.json            airlock → oracle  { callId, ok, result | error }
     task-context.schema.json           airlock → oracle at spawn
   airlock/          Rust crate — trusted capability broker. Executes tools; holds keys, DB, HMAC.
+                    In ACA, the trusted parent mints a Foundry-only bearer via
+                    IDENTITY_ENDPOINT + IDENTITY_HEADER, then gives the oracle
+                    only FOUNDRY_ACCESS_TOKEN + the validated project endpoint.
+                    The oracle never receives managed-identity capability.
+                    This path is used by `run-oracle`; the current `serve-http`
+                    `/run` implementation remains the deterministic scripted
+                    runner and therefore does not request a Foundry token.
   oracle/           Node package — untrusted agent. Runs the LLM tool-loop; only LLM_API_KEY.
   artifact-service/ Node — user-scoped artifact catalog (save/list/upload/read).
                     Every non-health route verifies a Microsoft Entra bearer

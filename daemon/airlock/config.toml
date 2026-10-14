@@ -9,6 +9,12 @@
 max_tool_calls = 20
 wall_clock_secs = 60
 
+# Foundry authentication is not configured here. In ACA the trusted airlock
+# obtains a Foundry-only token from the platform-managed IDENTITY_ENDPOINT and
+# passes only that short-lived token to the oracle child. For a user-assigned
+# identity, set FOUNDRY_MANAGED_IDENTITY_CLIENT_ID in the parent environment.
+# Client-secret auth is local-only and requires ALLOW_CLIENT_SECRET_AUTH=true.
+#
 # Foundry deployment-name allowlist (design §3.3). A RunRequest's `model`, if
 # present, must be one of these; otherwise `default` is used. These are
 # DEPLOYMENT names in the Foundry project (Models + endpoints), not model ids.

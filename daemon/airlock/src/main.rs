@@ -327,8 +327,10 @@ fn run_oracle(
         .stdout(Stdio::piped())
         .stderr(Stdio::inherit());
 
-    // Phase 4: strip env, set ulimits, chroot before spawn.
-    lockdown::harden_child(&mut child_cmd);
+    // Mint the Foundry-only token in the trusted parent, then strip the child
+    // environment and apply OS limits before spawn. Any auth/config failure is
+    // terminal here; never start the oracle with an empty credential.
+    lockdown::harden_child(&mut child_cmd)?;
 
     let mut child = child_cmd
         .spawn()
